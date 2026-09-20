@@ -1,0 +1,10 @@
+# build output
+tangly
+tangly.exe
+spider
+spider.exe
+*.exe
+*.exe~
+
+# local scratch
+*.log
