@@ -91,10 +91,10 @@ script.
 
 ## Requirements
 
-Go 1.22 or newer, and Windows for the overlay window: it is implemented against
-Win32 (`overlay_windows.go`). The model, the renderer and the REPL are portable,
-so a Linux or macOS presenter could be added behind the same interface. The
-build tag keeps it honest — the rest of the program is unchanged.
+Go 1.22 or newer, on Windows. The window layer is implemented against Win32
+(`overlay_windows.go`) and the program therefore only builds there today; the
+model, the renderer and the REPL are portable, so another presenter could be
+added behind the same interface.
 
 ## Tests
 
