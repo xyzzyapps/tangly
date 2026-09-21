@@ -133,20 +133,45 @@ able to span its length, and the script API round-tripping a definition.
 
 ## Influences
 
-[verlet-js](https://github.com/subprotocol/verlet-js) by Sub Protocol, MIT. It is
-a small Verlet engine — particles, distance/pin/angle constraints, composites —
-and reading it is what settled two things here. Its frame loop scales each
-constraint by `1/step`, so the iteration count changes only how well the solver
-converges rather than how stiff everything is; tangly does the same (`solve` in
+**[verlet-js](https://github.com/subprotocol/verlet-js)** by Sub Protocol
+([subprotocol.com](http://subprotocol.com/)), MIT — a small Verlet engine of
+particles, distance/pin/angle constraints and composites, and the thing this
+creature's legs are modelled on.
+
+Two of its ideas are in the solver itself. Its frame loop scales every constraint
+by `1/step`, so the iteration count affects only how well the solver converges
+rather than how stiff everything is; tangly does the same (`solve` in
 `solver.go`), which is why `iters` is a convergence knob and rigid constraints
 stay rigid. Its `PinConstraint` is the same idea as a planted foot, and its
 "relax, then bounds" loop is the shape of `world.step`.
 
-It has no creature or leg code to borrow — its examples are shapes, trees, cloth
-and a spiderweb — so the legs here are their own thing: exact three-bone inverse
-kinematics per leg rather than a simulated chain, because a chain of distance
-constraints stretches under load and folds into a loop when the foot comes back
-towards the body, and this creature walks on its feet.
+Its **spider** is in
+[`examples/spiderweb.html`](https://github.com/subprotocol/verlet-js/blob/master/examples/spiderweb.html)
+(`VerletJS.prototype.spider` and `crawl`), not in `lib/`. It is a web-dweller:
+the spider is dropped onto a net of pinned nodes under gravity, its three body
+particles — head, thorax, abdomen — are held in line by an angle constraint, each
+leg is four particles held by three angle constraints, and a step picks a free web
+node inside that leg's quadrant and re-ties the foot to it with a rest-length-zero
+distance constraint. The stride order is every third leg.
+
+The legs here are that, adapted to a creature that walks instead of hanging:
+
+- the `AngleConstraint` itself — see `hinge` and `solveHinge` in `solver.go`,
+  which rotate `a`, `c` and `b` the way it does;
+- three hinges a leg, with its stiffnesses 1.0, 0.4 and 0.9, converted into this
+  solver's terms (it relaxes 16 times a frame with everything scaled by `1/step`,
+  so its numbers are 1/16 per pass; this solver's are `16/solverIters`);
+- the foot tethered to its target by a rest-length-zero constraint, as it ties a
+  foot to a web node, so a foot is a particle rather than a placed dot;
+- stepping by moving the target and letting the leg spring after it, rather than
+  driving the foot along a scripted path;
+- its stride order, every third leg, so consecutive steps are never on
+  neighbouring legs.
+
+What is not borrowed: the web and the gravity (this one walks about a desktop),
+and the soft bones. A leg here has three bones that are projected back to their
+lengths at the end of every tick, so the hinges give and the leg springs, but a
+bone does not stretch into rubber.
 
 ## License
 
