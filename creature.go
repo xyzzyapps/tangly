@@ -47,7 +47,17 @@ const (
 	// chain would have to loop back on itself, above the second the bones would
 	// have to stretch.
 	foldLimit    = 0.78
-	stretchLimit = 0.97
+	stretchLimit = 1.0
+	// hingePass converts a verlet-js angle stiffness into this solver's terms: that
+	// engine relaxes 16 times a frame with every constraint scaled by 1/step, so a
+	// stiffness of 1 there is 1/16 per pass, and this solver relaxes solverIters
+	// times with the same scaling.
+	hingePass = 16.0 / float64(solverIters)
+	// strideSkip is how the walking order skips round the legs -- three at a time,
+	// as verlet-js steps a spider's eight -- so consecutive steps are never on
+	// neighbouring legs. plantRadius is how close a foot must get to count planted.
+	strideSkip  = 3
+	plantRadius = 6.0
 	// How a walking foot is placed, as fractions of the leg's reach: legLead ahead
 	// of the hip along the direction of travel, legSide out to its own side. The
 	// pair has to land inside walkTrigger or the foot steps again on touchdown, and
@@ -57,13 +67,12 @@ const (
 	legLead = 0.55
 	legSide = 0.68
 	// maxTrail is how far a drawn joint may lag its bone, in pixels.
-	maxTrail   = 10.0
-	restSpread = 8.0
+	maxTrail = 10.0
 	// dragFrom is the span at which a planted leg starts to hold the body back,
 	// and settleFor is how long the creature spends putting its legs back in line
 	// after a walk.
 	dragFrom  = 0.9
-	settleFor = 2.5
+	settleFor = 3.5
 )
 
 // legSpec places one leg in body space: forward runs along the body axis
@@ -87,26 +96,21 @@ type leg struct {
 	spec  legSpec
 	index int
 	root  *particle
-	knee  *particle // placed by inverse kinematics, never integrated
+	knee  *particle
 	shin  *particle
 	tip   *particle
+	pin   *particle  // the foot's target; the tip is tethered to this
 	rest  [3]float64 // bone lengths: root-knee, knee-shin, shin-tip
-	reach [2]float64 // [0] = root-knee, [1] = end-to-end reach of the shin pair
-	side  float64    // which way the knee bows, +1 or -1
 	limit float64    // longest hip-to-foot span the bones allow
 
-	anchor   Vec // where the planted foot is pinned
-	from, to Vec
-	swing    float64 // 0..1 while the foot is airborne, -1 when planted
-	dur      float64
-	// drawn marks are where the joints are shown, which trails the exact solution
-	// by a few milliseconds so the leg carries some weight as it moves.
-	drawnKnee Vec
-	drawnShin Vec
-
+	anchor    Vec // where the planted foot is pinned
+	from, to  Vec
+	swing     float64 // 0..1 while the foot is airborne, -1 when planted
+	dur       float64
 	air       bool
 	planted   bool
-	settling  bool    // this step is putting the leg back in line
+	settling  bool    // this step is stretching the leg back out
+	straight  bool    // it has already been stretched out since the last walk
 	restTimer float64 // seconds before it may step again
 	nextStep  float64 // seconds until its turn in the walking cycle
 	stepCount int     // how many times it has stepped
@@ -358,35 +362,50 @@ func (c *creature) addLeg(d legDef) *leg {
 	shinPos := hipPos.Add(chord.Mul(0.62)).Add(n.Mul(spec.reach * 0.04))
 	tipPos := hipPos.Add(chord)
 
-	// Only the hip is a physical particle: knee and shin are placed by IK every
-	// tick, which is what keeps the bones from stretching like rubber.
+	// Every joint is a particle, and the foot is tethered to a target by a constraint
+	// of length zero -- which is how verlet-js ties a spider's foot to a node of its
+	// web. Stepping is then only a matter of moving the target and letting the leg
+	// spring after it; that spring is the leg animation.
 	root := c.w.newParticle(hipPos, legMass, 0.995)
-	knee := c.w.newParticle(kneePos, 0, 1)
-	shin := c.w.newParticle(shinPos, 0, 1)
-	tip := c.w.newParticle(tipPos, 0, 1)
-
-	// Two compliant links to two body points place the hip, without constraining
-	// the body's orientation.
-	c.w.link(root, c.abdomen, root.pos.Sub(c.abdomen.pos).Len(), hipStiff, rigidLen)
-	c.w.link(root, c.head, root.pos.Sub(c.head.pos).Len(), hipStiff, rigidLen)
+	knee := c.w.newParticle(kneePos, legMass, 0.995)
+	shin := c.w.newParticle(shinPos, legMass, 0.995)
+	tip := c.w.newParticle(tipPos, legMass*0.8, 0.99)
+	pin := c.w.newParticle(tipPos, 0, 1)
 
 	lg := &leg{spec: spec, index: len(c.legs), root: root, knee: knee, shin: shin, tip: tip,
-		anchor: tipPos, swing: -1, planted: true}
+		pin: pin, anchor: tipPos, swing: -1, planted: true}
 	lg.rest[0] = kneePos.Sub(hipPos).Len()
 	lg.rest[1] = shinPos.Sub(kneePos).Len()
 	lg.rest[2] = tipPos.Sub(shinPos).Len()
-	// End-to-end reach of the (knee-shin, shin-tip) pair at its resting bend.
-	lg.reach[0] = lg.rest[0]
-	lg.reach[1] = math.Sqrt(lg.rest[1]*lg.rest[1] + lg.rest[2]*lg.rest[2] -
-		2*lg.rest[1]*lg.rest[2]*math.Cos(c.shinBend))
-	lg.limit = lg.reach[0] + lg.reach[1]
-	lg.side = sign(chord.Cross(kneePos.Sub(hipPos)))
+	lg.limit = lg.rest[0] + lg.rest[1] + lg.rest[2]
+
+	// Constraints are relaxed in order, so the bones go in after the hinges and the
+	// tether: those bend the leg and pull it about, and the bones then put the
+	// lengths back. The other order lets the hinges win and the leg stretches itself
+	// to pieces.
+	//
+	// Three hinges, as many as verlet-js puts on a spider's leg: the joint at the
+	// body holds firm, the middle one is loose, the one by the foot is firm again.
+	// The stiffnesses are its 1.0, 0.4 and 0.9 in this solver's terms (see
+	// hingePass), so a leg springs as much as a verlet-js leg does.
+	c.w.hinge(c.abdomen, root, knee, 1.0*hingePass)
+	c.w.hinge(root, knee, shin, 0.4*hingePass)
+	c.w.hinge(knee, shin, tip, 0.9*hingePass)
+	c.w.link(tip, pin, 0, 0.9, rigidLen)
+
+	c.w.link(root, knee, kneePos.Sub(hipPos).Len(), 1, rigidLen)
+	c.w.link(knee, shin, shinPos.Sub(kneePos).Len(), 1, rigidLen)
+	c.w.link(shin, tip, tipPos.Sub(shinPos).Len(), 1, rigidLen)
+
+	// Two links to two body points place the hip, without constraining the body's
+	// orientation.
+	c.w.link(root, c.abdomen, root.pos.Sub(c.abdomen.pos).Len(), hipStiff, rigidLen)
+	c.w.link(root, c.head, root.pos.Sub(c.head.pos).Len(), hipStiff, rigidLen)
 
 	tipPos = hipPos.Add(outward.Mul(lg.limit * idleStance))
 	tip.setPos(tipPos)
+	pin.setPos(tipPos)
 	lg.anchor = tipPos
-	lg.drawnKnee = kneePos
-	lg.drawnShin = shinPos
 
 	c.legs = append(c.legs, lg)
 	return lg
@@ -449,51 +468,19 @@ func (c *creature) layStrand(s *strand) {
 	s.taut = 0
 }
 
-// constrainFoot keeps the foot inside the span the leg's bones allow: never
-// further than they reach, and never so close that the chain has to fold back on
-// itself into a loop. A planted foot that hits either bound skids along the silk
-// instead of tearing the leg apart; the step already on its way re-plants it.
-func (lg *leg) constrainFoot(bounds rect) {
-	d := lg.tip.pos.Sub(lg.root.pos)
+// constrainTarget keeps a leg's target somewhere the leg can stand: inside the
+// window, and within the span its bones cover. It moves the target rather than the
+// foot, because the foot is a particle among the bones now, and shoving it about to
+// satisfy a rule would stretch the bones that hold the leg together.
+func (lg *leg) constrainTarget(bounds rect, root Vec) {
+	d := lg.anchor.Sub(root)
 	l := d.Len()
 	if l < 1e-6 {
 		return
 	}
 	span := clampf(l, lg.limit*foldLimit, lg.limit*stretchLimit)
-	if span == l {
-		return
-	}
-	p := bounds.clampVec(lg.root.pos.Add(d.Mul(span/l)), 3)
-	lg.tip.setPos(p)
-	if lg.planted {
-		lg.anchor = p
-	}
+	lg.anchor = bounds.clampVec(root.Add(d.Mul(span/l)), 6)
 }
-
-// resolve places the knee and shin for a given hip and foot by direct geometry:
-// the same three bones, but solved instead of iterated, so a leg can never be
-// asked to reach further than its own length.
-func (lg *leg) resolve(bounds rect) {
-	b0, r2 := lg.reach[0], lg.reach[1]
-	b1, b2 := lg.rest[1], lg.rest[2]
-	d := lg.tip.pos.Sub(lg.root.pos)
-	dist := clampf(d.Len(), math.Abs(b0-r2)+0.01, lg.limit-0.01)
-	dir := d.Norm()
-	if dir.IsZero() {
-		dir = V(1, 0)
-	}
-	cosA := clampf((b0*b0+dist*dist-r2*r2)/(2*b0*dist), -1, 1)
-	knee := lg.root.pos.Add(dir.Rot(lg.side * math.Acos(cosA)).Mul(b0))
-	lg.knee.setPos(bounds.clampVec(knee, 2))
-
-	if kt := lg.tip.pos.Sub(knee); kt.Len() > 1e-6 {
-		l := kt.Len()
-		cosB := clampf((b1*b1+l*l-b2*b2)/(2*b1*l), -1, 1)
-		shin := knee.Add(kt.Mul(1 / l).Rot(lg.side * math.Acos(cosB)).Mul(b1))
-		lg.shin.setPos(bounds.clampVec(shin, 2))
-	}
-}
-
 func (c *creature) bodyAxis() Vec {
 	axis := c.head.pos.Sub(c.abdomen.pos).Norm()
 	if axis.IsZero() {
@@ -655,16 +642,11 @@ func (c *creature) Update(dt float64) {
 	c.updateStrands(dt)
 	c.w.step(dt)
 	for _, lg := range c.legs {
-		lg.constrainFoot(c.w.bounds)
-		lg.resolve(c.w.bounds)
-		lg.follow(dt, c.legFollow)
+		lg.constrainTarget(c.w.bounds, lg.root.pos)
 	}
 	c.followBody(dt)
 	c.updateChatter(dt)
 }
-
-// desiredMotion picks where the body wants to travel: towards a click target, or
-// a slow stroll to a spot it picked itself.
 func (c *creature) desiredMotion(dt float64) (Vec, bool) {
 	if c.dragging {
 		return Vec{}, false
@@ -787,15 +769,17 @@ func (c *creature) placeBody() {
 	c.head.setPos(base.Add(axis.Mul(bodySpan)))
 }
 
-// updateLegs runs the gait: airborne feet follow their arc, planted feet step
-// once the body has stretched them far enough. Steps ripple outwards instead of
-// firing all at once, so the creature always keeps a grip.
+// updateLegs runs the gait. A foot is planted by moving its target and letting the
+// leg spring after it; it has landed when it gets there, or when it has had long
+// enough. Steps go round the legs in verlet-js's order, one at a time while
+// walking, so neighbouring legs are never in the air together.
 func (c *creature) updateLegs(dt float64, walkDir Vec, walking bool) {
 	body := c.abdomen.pos
 	for _, lg := range c.legs {
 		if lg.restTimer > 0 {
 			lg.restTimer -= dt
 		}
+		lg.pin.setPos(lg.anchor)
 	}
 
 	for _, lg := range c.legs {
@@ -803,58 +787,53 @@ func (c *creature) updateLegs(dt float64, walkDir Vec, walking bool) {
 			continue
 		}
 		lg.swing += dt / lg.dur
-		t := clamp01(lg.swing)
-		p := lg.from.Lerp(lg.to, easeInOut(t))
-		d := lg.to.Sub(lg.from)
-		n := d.Perp().Norm()
-		if n.Dot(p.Sub(body)) < 0 {
-			n = n.Mul(-1)
+		if lg.swing < 1 && lg.tip.pos.Sub(lg.anchor).Len() >= plantRadius {
+			continue
 		}
-		// The foot swings outwards on an arc, which is what gives the legs their
-		// curved sweep.
-		p = p.Add(n.Mul(math.Sin(math.Pi*t) * (d.Len()*0.25 + 6)))
-		lg.tip.setPos(p)
-
-		if lg.swing >= 1 {
-			lg.air = false
-			lg.planted = true
-			lg.swing = -1
-			lg.anchor = lg.to
-			switch {
-			case lg.settling:
-				lg.restTimer = 0.15 + c.rng.Float64()*0.2
-				lg.settling = false
-			case walking || c.dragging:
-				lg.restTimer = 0.12 + c.rng.Float64()*0.12
-			default:
-				lg.restTimer = 0.8 + c.rng.Float64()*1.6
-			}
-			c.stepCount++
-			if c.onPlant != nil {
-				c.onPlant(clamp01(0.3 + 0.7*(lg.to.Sub(body).Len()/lg.limit)))
-			}
+		lg.air = false
+		lg.planted = true
+		lg.swing = -1
+		switch {
+		case lg.settling:
+			lg.restTimer = 0.15 + c.rng.Float64()*0.2
+			lg.settling = false
+		case walking || c.dragging:
+			lg.restTimer = 0.05 + c.rng.Float64()*0.08
+		default:
+			lg.restTimer = 0.8 + c.rng.Float64()*1.6
+		}
+		c.stepCount++
+		if c.onPlant != nil {
+			c.onPlant(clamp01(0.3 + 0.7*(lg.anchor.Sub(body).Len()/lg.limit)))
 		}
 	}
 
+	// While walking, the cycle decides: a leg steps when its turn comes, not when it
+	// happens to be stretched. Letting stretching jump the queue means the same leg
+	// is always the most stretched one, and it ends up doing all the walking.
+	// 1.0 means the stretch test can never fire, so only the cycle decides whose turn
+	// it is, and when standing still only the alignment rule moves a leg. Letting a
+	// stretched leg jump the queue makes the same few legs do all the stepping --
+	// which they then do forever, because they are the ones left behind. Being
+	// hauled about is the one time a leg is allowed to scrabble on its own.
 	maxInAir := 2
-	trigger := walkTrigger
+	trigger := 1.0
 	switch {
 	case c.dragging:
 		maxInAir, trigger = 4, 0.8
 	case !walking:
-		// Idle legs are putting themselves back in line, so a couple may move at
-		// once; it reads as the creature settling rather than shuffling.
-		maxInAir, trigger = 3, idleTrigger
+		maxInAir = 3
 	}
 
-	// On the move, the legs walk in a cycle: each one takes its turn, staggered
-	// around the body, so every leg walks rather than only the ones being dragged
-	// out of line by the direction of travel.
 	gait := walking && !c.dragging
 	cycle := 0.0
 	if gait {
 		cycle = c.strideCycle()
 		if !c.wasWalking {
+			// A new walk: every leg gets its feet-drawn-in fixed once more.
+			for _, lg := range c.legs {
+				lg.straight = false
+			}
 			c.staggerWalk(cycle)
 		}
 		for _, lg := range c.legs {
@@ -864,6 +843,7 @@ func (c *creature) updateLegs(dt float64, walkDir Vec, walking bool) {
 		}
 	}
 	c.wasWalking = walking
+
 	if c.airCount() >= maxInAir {
 		return
 	}
@@ -878,18 +858,16 @@ func (c *creature) updateLegs(dt float64, walkDir Vec, walking bool) {
 		if lg.air || !lg.planted {
 			continue
 		}
-		// Measured from where the leg meets the body, matching where steps are
-		// placed. Using the hip particle instead adds its lag into the number and
-		// makes legs step again the moment they land.
 		stance := c.attachPoint(lg).Sub(lg.anchor).Len()
-		// A walk leaves the legs drawn in and swung towards where it was going.
-		// Once it stops, each leg steps back into its own slice of the fan, one at
-		// a time, so the resting stance is evenly spread again.
-		// Legs drawn in are only stretched back out for a while after a walk, but a
-		// foot that has drifted out of its own slice is always stepped back: that is
-		// what keeps the resting fan evenly spread.
-		settling := resting && (c.outOfLine(lg) ||
-			(c.settleTimer > 0 && stance < lg.limit*idleStance*0.95))
+		// Once it stops, the feet that a walk left drawn in are stretched back out.
+		// That is the only thing that moves a leg while it stands: an alignment rule
+		// here turned into a loop, the leg and the body chasing each other's drift,
+		// and it stepped several times a second.
+		// Once per walk each leg, and no more: a leg that has just been stretched out
+		// has nothing left to fix, and letting the rule fire again turns into a
+		// shuffle.
+		settling := resting && c.settleTimer > 0 && !lg.straight &&
+			stance < lg.limit*idleStance*0.95
 		if settling {
 			lg.restTimer = 0
 		}
@@ -900,60 +878,27 @@ func (c *creature) updateLegs(dt float64, walkDir Vec, walking bool) {
 		if !settling && !due && stance < lg.limit*trigger {
 			continue
 		}
-		if c.neighbourInAir(i) {
-			continue
-		}
 		c.startStep(lg, walkDir, walking)
 		lg.settling = settling
+		if settling {
+			lg.straight = true
+		}
 		if gait {
 			lg.nextStep = cycle
 		}
-		c.stepCursor = (i + 1) % n
+		c.stepCursor = (i + strideSkip) % n
 		return
 	}
 }
-
-// followBody trails the shell behind the pose, so a change of direction has some
-// weight to it rather than snapping.
 func (c *creature) followBody(dt float64) {
 	k := 1 - math.Exp(-c.bodyFollow*dt)
-	c.drawnPos = trail(c.drawnPos, c.pos, k)
+	c.drawnPos = c.drawnPos.Add(c.pos.Sub(c.drawnPos).Mul(k))
 	c.drawnAngle += math.Remainder(c.angle-c.drawnAngle, 2*math.Pi) * k
 }
 
-// follow trails a leg's joints behind their exact positions. The foot is not
-// trailed: it stays where it was planted. A joint never trails further than
-// maxTrail, so a fast swing reads as weight rather than a leg coming apart.
-func (lg *leg) follow(dt, rate float64) {
-	k := 1 - math.Exp(-rate*dt)
-	lg.drawnKnee = trail(lg.drawnKnee, lg.knee.pos, k)
-	lg.drawnShin = trail(lg.drawnShin, lg.shin.pos, k)
-}
-
-func trail(from, to Vec, k float64) Vec {
-	p := from.Add(to.Sub(from).Mul(k))
-	if d := p.Sub(to); d.Len() > maxTrail {
-		p = to.Add(d.Norm().Mul(maxTrail))
-	}
-	return p
-}
-
-// drawnBody is the shell as drawn, and drawnAxis its heading.
 func (c *creature) drawnBody() (Vec, Vec) {
 	axis := V(math.Cos(c.drawnAngle), math.Sin(c.drawnAngle))
 	return c.drawnPos, axis
-}
-
-// outOfLine reports whether a planted foot has drifted out of the leg's own
-// direction around the body, which is what a walk leaves behind.
-func (c *creature) outOfLine(lg *leg) bool {
-	outward := c.attachPoint(lg).Sub(c.abdomen.pos).Norm()
-	d := lg.anchor.Sub(c.abdomen.pos)
-	if outward.IsZero() || d.Len2() < 1 {
-		return false
-	}
-	off := math.Abs(math.Atan2(outward.Cross(d), outward.Dot(d))) * 180 / math.Pi
-	return off > restSpread
 }
 
 // separateDirection turns a landing direction away from the legs on either side
@@ -980,34 +925,19 @@ func (c *creature) separateDirection(lg *leg, dir Vec, minGapDeg float64) Vec {
 	return dir
 }
 
-// staggerWalk hands out the walking cycle: a leg's turn comes a little later than
-// the leg in front of it on the same side, and the other side runs half a cycle
-// behind its mirror. That is an alternating gait -- a leg and its mirror are never
-// in the air together -- rather than the whole fan marching round in one
-// direction.
+// staggerWalk hands out the walking cycle in the order verlet-js steps a spider's
+// legs: every third leg, which walks round the body without ever following a leg
+// with the one next to it, or with its mirror.
 func (c *creature) staggerWalk(cycle float64) {
 	n := len(c.legs)
 	if n == 0 {
 		return
 	}
-	perSide := n / 2
 	for k, lg := range c.legs {
-		idx := k % perSide
-		if k >= perSide {
-			// The far side is listed back to front, so count from its end.
-			idx = (n - 1 - k) % perSide
-		}
-		phase := float64(idx) / float64(perSide)
-		if k >= perSide {
-			phase += 0.5
-		}
-		lg.nextStep = math.Mod(phase, 1) * cycle
+		order := (k * strideSkip) % n
+		lg.nextStep = cycle * float64(order) / float64(n)
 	}
 }
-
-// strideCycle is how long one full walking cycle takes: long enough that the body
-// covers a stride's worth of ground between a leg's turns, and quicker when the
-// creature is hurrying.
 func (c *creature) strideCycle() float64 {
 	if len(c.legs) == 0 {
 		return 1
@@ -1061,7 +991,11 @@ func (c *creature) startStep(lg *leg, walkDir Vec, walking bool) {
 		}
 		offset := walkDir.Mul(lg.limit * legLead).Add(own.Norm().Mul(lg.limit * legSide))
 		dir = offset.Norm()
-		scale = offset.Len() / lg.limit
+		// A leg pointing away from the direction of travel would otherwise be asked
+		// for a foot further off than it can reach, get its target clamped, and land
+		// already stretched -- which made those legs step over and over while the
+		// rest walked normally.
+		scale = math.Min(offset.Len()/lg.limit, landingScale)
 	default:
 		// Idling feet stand well out, so a resting creature keeps the long, fanned
 		// stance of the reference while still swaying without shuffling.
@@ -1078,6 +1012,8 @@ func (c *creature) startStep(lg *leg, walkDir Vec, walking bool) {
 	lg.stepCount++
 	lg.from = lg.tip.pos
 	lg.to = to
+	lg.anchor = to
+	lg.pin.setPos(to)
 	lg.swing = 0
 	lg.air = true
 	lg.planted = false

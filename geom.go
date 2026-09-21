@@ -36,6 +36,13 @@ func (v Vec) Rot(ang float64) Vec {
 
 func (v Vec) Lerp(o Vec, t float64) Vec { return v.Add(o.Sub(v).Mul(t)) }
 
+// RotAbout turns v around a fixed point, the way verlet-js's Vec2.rotate does.
+func (v Vec) RotAbout(origin Vec, ang float64) Vec {
+	c, s := math.Cos(ang), math.Sin(ang)
+	d := v.Sub(origin)
+	return Vec{d.X*c - d.Y*s + origin.X, d.X*s + d.Y*c + origin.Y}
+}
+
 func (v Vec) IsZero() bool { return v.X == 0 && v.Y == 0 }
 
 func clampf(v, lo, hi float64) float64 {

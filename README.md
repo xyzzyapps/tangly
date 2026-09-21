@@ -61,13 +61,18 @@ a redirection surface and the alpha is discarded — you get an opaque rectangle
 On macOS and on Linux with a compositor, Ebitengine's own transparent window is
 used directly. The creature is drawn identically either way.
 
-**The creature is a constraint system.** A Verlet solver with distance and rope
-constraints drives everything: the silk is a rope that slips loose rather than
-tethering, each hip is tied to the body by two compliant links, and the body
-itself is kinematic so it can walk out from under its own feet. Each leg is a
-three-bone chain solved exactly by inverse kinematics rather than iterated, so a
-leg can never be asked to reach further than its own bones, and a foot that
-would be is clamped and steps instead.
+**The creature is a constraint system.** A Verlet solver with distance, rope and
+angle constraints drives everything: the silk is a rope that slips loose rather
+than tethering, each hip is tied to the body by two links, and the body itself is
+kinematic so it can walk out from under its own feet.
+
+The legs follow verlet-js's spider: three bones held by three **angle
+constraints** (its stiffnesses, 1.0, 0.4 and 0.9, translated into this solver's
+terms), with the foot tethered to its target by a constraint of length zero --
+the way that engine ties a foot to a node of its web. A step is nothing more than
+moving the target and letting the leg spring after it, so the leg bends and
+springs as it moves. The bones are projected back to their lengths at the end of
+every tick, so the give shows up as the leg bending rather than as rubber.
 
 **The gait is a cycle plus a trigger.** While walking, every leg takes its turn in
 a staggered wave around the body, so all ten walk rather than only the ones the

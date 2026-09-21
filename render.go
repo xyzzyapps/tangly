@@ -170,8 +170,8 @@ func drawLegs(dst *ebiten.Image, c *creature, pos, axis, perp Vec, p *painter) {
 	var buf [4]Vec
 	for _, lg := range c.legs {
 		buf[0] = pos.Add(axis.Mul(lg.spec.forward)).Add(perp.Mul(lg.spec.lateral))
-		buf[1] = lg.drawnKnee
-		buf[2] = lg.drawnShin
+		buf[1] = lg.knee.pos
+		buf[2] = lg.shin.pos
 		buf[3] = lg.tip.pos
 		for _, path := range [...]*vector.Path{&p.halo, &p.core, &p.thread} {
 			path.MoveTo(fx(buf[0]), fy(buf[0]))
@@ -190,7 +190,7 @@ func drawLegs(dst *ebiten.Image, c *creature, pos, axis, perp Vec, p *painter) {
 
 	// A node at each joint, so both knees read as joints.
 	for _, lg := range c.legs {
-		for _, joint := range [...]Vec{lg.drawnKnee, lg.drawnShin} {
+		for _, joint := range [...]Vec{lg.knee.pos, lg.shin.pos} {
 			vector.DrawFilledCircle(dst, fx(joint), fy(joint), p.st.jointRadius, p.dimmed(p.st.knee), true)
 		}
 	}
