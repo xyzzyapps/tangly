@@ -3,7 +3,7 @@
 [![Built with DeepSeek](https://img.shields.io/badge/built_with-DeepSeek-4D6BFE)](https://deepseek.com)
 
 A eight-legged creature that lives on your desktop. It walks to where you click,
-trails silk, makes very small noises, and can be taken apart and rebuilt live
+makes very small noises, and can be taken apart and rebuilt live
 from a REPL while it is running.
 
 No window frame, no black box: the creature is drawn straight onto the desktop
@@ -23,13 +23,13 @@ Start it from a terminal — that terminal becomes the creature's prompt
 | --- | --- |
 | click inside its corner of the desktop | it walks there |
 | drag its body | pick it up and carry it |
-| shift + drag anywhere in its corner | move that corner (and the creature with it) |
 | right-click on it | quit |
 | Esc | quit (when its window has focus) |
 | wheel over it | volume |
 | M / F | mute / always-on-top (when its window has focus) |
 
-The creature roams a 720×540 patch of desktop. Shift+drag moves the patch.
+The creature roams a 720×540 patch of desktop; `tangly.window({x, y})` at the
+prompt moves that patch.
 
 ## The REPL
 
@@ -62,9 +62,9 @@ On macOS and on Linux with a compositor, Ebitengine's own transparent window is
 used directly. The creature is drawn identically either way.
 
 **The creature is a constraint system.** A Verlet solver with distance, rope and
-angle constraints drives everything: the silk is a rope that slips loose rather
-than tethering, each hip is tied to the body by two links, and the body itself is
-kinematic so it can walk out from under its own feet.
+angle constraints drives everything. The body is kinematic so the creature can walk
+out from under its own feet, each hip is a point placed on the shell rather than a
+simulated particle, and a planted foot is held exactly where it was put.
 
 The legs follow verlet-js's spider: three bones held by three **angle
 constraints** (its stiffnesses, 1.0, 0.4 and 0.9, translated into this solver's
@@ -89,7 +89,7 @@ script.
 | file | role |
 | --- | --- |
 | `main.go` | game shell, input, window plumbing, the eval queue |
-| `creature.go` | body, legs, silk, gait, behaviour |
+| `creature.go` | body, legs, gait, behaviour |
 | `solver.go` | particles, constraints, the world step |
 | `render.go` | straight jointed legs, rectangular body, scriptable palette |
 | `audio.go` | the four voices |

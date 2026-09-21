@@ -14,7 +14,7 @@ go build -o tangly.exe .
 You get a window-less creature on the desktop and a prompt in that terminal:
 
 ```
-tangly awake: 10 legs, 9 silk strands, body 32x22
+tangly awake: 8 legs, body 32x22
 tangly repl: type help() for the API, or paste JavaScript
 tangly>
 ```
@@ -80,7 +80,6 @@ tangly> tangly.leg({angle: 30, reach: 150})
 tangly> tangly.leg({angle: 150, reach: 150})
 tangly> tangly.leg({angle: -30, reach: 150})
 tangly> tangly.leg({angle: -150, reach: 150})
-tangly> tangly.silk({count: 0})
 tangly> tangly.stand()
 ```
 
@@ -117,8 +116,8 @@ tangly> tangly.feet(true)             // draw them at all (off by default)
 
 Colours are straight RGBA. The parts are `legHalo`, `legBloom`, `legCore`,
 `legThread`, `knee`, `ring`, `ringBloom`, `ringRim`, `bodyFill`, `bodyEdge`,
-`bodyDot`, `bodyEye` and `silk`. `pen` takes any of `halo`, `bloom`, `leg`,
-`thread`, `joint`, `ring`, `body`, `silk` — widths in pixels. An unknown part or
+`bodyDot` and `bodyEye`. `pen` takes any of `halo`, `bloom`, `leg`, `thread`,
+`joint`, `ring`, `body` — widths in pixels. An unknown part or
 key is ignored, so a typo will just do nothing.
 
 ---
@@ -196,7 +195,7 @@ The API is layered, so you can work at whatever level the question is at:
 | --- | --- |
 | simulation | `pause` `resume` `step` `iters` `particles` `tps` |
 | pose | `place` `angle` `stand` `settle` |
-| body and legs | `body` `leg` `legs` `silk` `clear` `reset` |
+| body and legs | `body` `leg` `legs` `clear` `reset` |
 | behaviour | `wander` `watch` `scurry` `gait` `moveTo` `grab` `drop` |
 | look | `color` `pen` `ring` `feet` |
 | sound | `sound` `voices` `play` `mute` `volume` |
@@ -204,7 +203,7 @@ The API is layered, so you can work at whatever level the question is at:
 | inspection | `def` `where` `legs` `frame` `help` |
 
 `iters(n)` is the number of relaxation passes the constraint solver gets per
-tick — drop it to 3 and watch the silk go slack and rubbery, raise it to 40 and
+tick — drop it to 3 and watch the legs go slack and rubbery, raise it to 40 and
 the hips hold tighter. `particles()` counts what the solver is carrying.
 
 `frame()` reports how much of the surface is actually drawn plus the overlay's
@@ -227,8 +226,8 @@ of it.
 **No prompt.** It only appears when stdin is a terminal; launched from a file
 manager you get the creature and no prompt. Run it from a console.
 
-**The creature is not where I left it.** It roams a 720×540 patch. Shift+drag
-moves the patch, and `tangly.window({x: 100, y: 100})` moves it from the prompt.
+**The creature is not where I left it.** It roams a 720×540 patch of desktop.
+`tangly.window({x: 100, y: 100})` moves that patch from the prompt.
 If you have lost it entirely, `tangly.frame()` gives you the rectangle.
 
 **It is behind another window.** `tangly.topmost(true)`. Fullscreen applications

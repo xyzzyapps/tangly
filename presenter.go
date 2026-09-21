@@ -55,7 +55,6 @@ type pointerState struct {
 	leftFresh  bool // went down since the last poll, however briefly
 	right      bool
 	rightFresh bool
-	shift      bool
 }
 
 // keyCode is a shortcut the creature understands, named rather than numbered so

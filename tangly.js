@@ -30,6 +30,5 @@ tangly.legs([
   {angle: -18, reach: 126},
 ]);
 
-// Strands of silk to trail about, and how it walks.
-tangly.silk({count: 9, length: 300});
+// How it walks.
 tangly.gait({speed: 85, agility: 7, turnRate: 4, arrive: 16, drag: 3.2, shinBend: 2.15});

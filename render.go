@@ -22,7 +22,6 @@ type style struct {
 	bodyEdge  color.RGBA
 	bodyDot   color.RGBA
 	bodyEye   color.RGBA
-	silk      color.RGBA
 
 	// Stroke widths and sizes, so the linework can be tuned live too.
 	haloWidth   float32
@@ -33,7 +32,6 @@ type style struct {
 	ringRadius  float32
 	ringWidth   float32
 	bodyWidth   float32
-	silkWidth   float32
 }
 
 var defaultStyle = style{
@@ -49,7 +47,6 @@ var defaultStyle = style{
 	bodyEdge:  color.RGBA{206, 224, 186, 190},
 	bodyDot:   color.RGBA{196, 252, 128, 190},
 	bodyEye:   color.RGBA{214, 255, 140, 235},
-	silk:      color.RGBA{214, 238, 218, 255},
 
 	haloWidth:   4.6,
 	bloomWidth:  2.4,
@@ -59,7 +56,6 @@ var defaultStyle = style{
 	ringRadius:  7.4,
 	ringWidth:   1.8,
 	bodyWidth:   1.3,
-	silkWidth:   0.7,
 }
 
 // painter draws the creature. It owns reusable path buffers so that a frame
@@ -73,7 +69,6 @@ type painter struct {
 	core   vector.Path
 	thread vector.Path
 	body   vector.Path
-	silk   vector.Path
 }
 
 func (p *painter) rgba(r, g, b, a uint8) color.RGBA {
@@ -106,29 +101,6 @@ func fillPath(dst *ebiten.Image, path *vector.Path, clr color.Color) {
 	vector.FillPath(dst, path, nil, do)
 }
 
-// catmullPath appends a smooth curve through pts, using the standard
-// Catmull-Rom to cubic Bézier conversion.
-func catmullPath(path *vector.Path, pts []Vec) {
-	if len(pts) < 2 {
-		return
-	}
-	path.MoveTo(fx(pts[0]), fy(pts[0]))
-	for i := range len(pts) - 1 {
-		p1, p2 := pts[i], pts[i+1]
-		p0 := p1.Mul(2).Sub(p2)
-		if i > 0 {
-			p0 = pts[i-1]
-		}
-		p3 := p2.Mul(2).Sub(p1)
-		if i+2 < len(pts) {
-			p3 = pts[i+2]
-		}
-		c1 := p1.Add(p2.Sub(p0).Mul(1.0 / 6))
-		c2 := p2.Sub(p3.Sub(p1).Mul(1.0 / 6))
-		path.CubicTo(fx(c1), fy(c1), fx(c2), fy(c2), fx(p2), fy(p2))
-	}
-}
-
 func cubicTo(path *vector.Path, c1, c2, end Vec) {
 	path.CubicTo(fx(c1), fy(c1), fx(c2), fy(c2), fx(end), fy(end))
 }
@@ -149,9 +121,6 @@ func drawCreature(dst *ebiten.Image, c *creature, p *painter) {
 	pos, axis := c.drawnBody()
 	perp := axis.Perp()
 
-	for _, s := range c.strands {
-		drawStrand(dst, s, p)
-	}
 	drawLegs(dst, c, pos, axis, perp, p)
 	drawBody(dst, c, pos, axis, perp, p)
 	if p.feet {
@@ -220,22 +189,4 @@ func drawFoot(dst *ebiten.Image, pos Vec, p *painter) {
 	vector.StrokeCircle(dst, x, y, r*1.25, r*0.49, p.dimmed(p.st.ringBloom), true)
 	vector.StrokeCircle(dst, x, y, r, r*0.46, p.dimmed(p.st.ringRim), true) // rim, for light desktops
 	vector.StrokeCircle(dst, x, y, r, p.st.ringWidth, p.dimmed(p.st.ring), true)
-}
-
-func drawStrand(dst *ebiten.Image, s *strand, p *painter) {
-	if s.fade <= 0.02 {
-		return
-	}
-	p.silk.Reset()
-	var buf [strandNodes]Vec
-	for i, n := range s.nodes {
-		buf[i] = n.pos
-	}
-	catmullPath(&p.silk, buf[:])
-
-	// Tight silk shines, slack silk barely shows.
-	alpha := (16 + 96*s.taut) * s.fade
-	c := p.st.silk
-	strokePath(dst, &p.silk, p.st.silkWidth*1.7, p.rgba(c.R*3/4, c.G*3/4, c.B*3/4, uint8(alpha*0.55)))
-	strokePath(dst, &p.silk, p.st.silkWidth, p.rgba(c.R, c.G, c.B, uint8(alpha)))
 }

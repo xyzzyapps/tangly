@@ -118,18 +118,6 @@ type leg struct {
 	stepCount int     // how many times it has stepped
 }
 
-// strand is a rope of silk: node 0 rides on the body and the far node is pinned
-// until the strand goes taut, at which point the far end slips loose and the
-// strand fades out instead of tethering the creature.
-type strand struct {
-	nodes  []*particle
-	phase  []float64
-	maxLen float64
-	taut   float64
-	fade   float64
-	dying  bool
-}
-
 type creature struct {
 	w   *world
 	rng *rand.Rand
@@ -137,7 +125,6 @@ type creature struct {
 	head    *particle
 	abdomen *particle
 	legs    []*leg
-	strands []*strand
 
 	bodyLength float64 // half the body's length, along the axis
 	bodyWidth  float64 // half its width, across the axis
@@ -212,19 +199,17 @@ type creatureDef struct {
 	BodyLength float64
 	BodyWidth  float64
 	Legs       []legDef
-	SilkCount  int
-	SilkLen    float64
 }
 
-// defaultDef is the creature as it ships: ten legs fanned around a square body
-// with a trail of silk.
+// defaultDef is the creature as it ships: eight legs fanned around a rectangular
+// body.
 func defaultDef() creatureDef {
 	// Four legs a side, 36 degrees apart, mirror images of each other across the
 	// body. Nothing at the very back: the pair that used to sit there crowded the
 	// ones in front of it.
 	angles := []float64{18, 54, 90, 126, -126, -90, -54, -18}
 	reaches := []float64{126, 118, 102, 114, 114, 102, 118, 126}
-	d := creatureDef{BodyLength: defaultBodyLength, BodyWidth: defaultBodyWidth, SilkCount: 9, SilkLen: 300}
+	d := creatureDef{BodyLength: defaultBodyLength, BodyWidth: defaultBodyWidth}
 	for i, a := range angles {
 		d.Legs = append(d.Legs, legDef{Angle: a, Reach: reaches[i]})
 	}
@@ -286,9 +271,6 @@ func (c *creature) applyDef(d creatureDef) {
 	for _, ld := range d.Legs {
 		c.addLeg(ld)
 	}
-	if d.SilkCount > 0 {
-		c.addSilk(d.SilkCount, d.SilkLen)
-	}
 }
 
 // def describes the creature as it stands, so a script can read it back out.
@@ -296,10 +278,6 @@ func (c *creature) def() creatureDef {
 	d := creatureDef{
 		BodyLength: c.bodyLength,
 		BodyWidth:  c.bodyWidth,
-		SilkCount:  len(c.strands),
-	}
-	for _, s := range c.strands {
-		d.SilkLen = math.Max(d.SilkLen, s.maxLen)
 	}
 	for _, lg := range c.legs {
 		d.Legs = append(d.Legs, legDef{Angle: lg.spec.angle, Reach: lg.spec.reach})
@@ -316,14 +294,8 @@ func (c *creature) clear() {
 		}
 		dead[lg.root], dead[lg.knee], dead[lg.shin], dead[lg.tip] = true, true, true, true
 	}
-	for _, s := range c.strands {
-		for _, n := range s.nodes {
-			dead[n] = true
-		}
-	}
 	c.w.forget(dead)
 	c.legs = c.legs[:0]
-	c.strands = c.strands[:0]
 	c.stepCursor = 0
 }
 
@@ -415,67 +387,10 @@ func (c *creature) addLeg(d legDef) *leg {
 	return lg
 }
 
-// addSilk hangs count strands of the given length around the body.
-func (c *creature) addSilk(count int, maxLen float64) {
-	if maxLen <= 0 {
-		maxLen = 300
-	}
-	for range count {
-		c.strands = append(c.strands, c.newStrand(maxLen))
-	}
-}
-
-// linkBody keeps the head at a fixed distance ahead of the abdomen.
 func (c *creature) linkBody() {
 	c.w.link(c.abdomen, c.head, bodySpan, 1, rigidLen)
 }
 
-func (c *creature) newStrand(maxLen float64) *strand {
-	s := &strand{maxLen: maxLen, fade: 0}
-	seg := s.maxLen / float64(strandNodes-1)
-	for i := range strandNodes {
-		p := c.w.newParticle(c.abdomen.pos, 0.4, 0.99)
-		if i == strandNodes-1 {
-			p.invMass = 0
-		}
-		s.nodes = append(s.nodes, p)
-		s.phase = append(s.phase, c.rng.Float64()*100)
-	}
-	c.w.link(s.nodes[0], c.abdomen, 1, 1, rigidLen) // node 0 rides on the body
-	for i := range strandNodes - 1 {
-		c.w.link(s.nodes[i], s.nodes[i+1], seg, 1, ropeLen)
-	}
-	c.layStrand(s)
-	return s
-}
-
-// layStrand re-lays a strand as a slack rope leaving the body in a fresh
-// direction, and pins its far end.
-func (c *creature) layStrand(s *strand) {
-	body := c.abdomen.pos
-	seg := s.maxLen / float64(strandNodes-1)
-	ang := c.rng.Float64() * 2 * math.Pi
-	// Prefer a direction whose far end lands inside the window.
-	for range 8 {
-		if c.w.bounds.contains(body.Add(V(math.Cos(ang), math.Sin(ang)).Mul(s.maxLen)), 12) {
-			break
-		}
-		ang += 0.6
-	}
-	dir := V(math.Cos(ang), math.Sin(ang))
-	for i, p := range s.nodes {
-		p.setPos(c.w.bounds.clampVec(body.Add(dir.Mul(seg*float64(i))), 6))
-	}
-	s.nodes[strandNodes-1].invMass = 0
-	s.dying = false
-	s.fade = 0
-	s.taut = 0
-}
-
-// constrainTarget keeps a leg's target somewhere the leg can stand: inside the
-// window, and within the span its bones cover. It moves the target rather than the
-// foot, because the foot is a particle among the bones now, and shoving it about to
-// satisfy a rule would stretch the bones that hold the leg together.
 func (lg *leg) constrainTarget(bounds rect, root Vec) {
 	// A generous margin, because the foot itself is clamped to the window later and a
 	// foot clamped in x and y independently is no longer the distance from its hip that
@@ -521,13 +436,6 @@ func (c *creature) BeginDrag(at Vec) {
 	c.dragging = true
 	c.hasTarget = false
 	c.dragTo = at
-	// Yanking the creature rips the silk loose.
-	for _, s := range c.strands {
-		if !s.dying {
-			s.dying = true
-			s.nodes[strandNodes-1].invMass = 0.4
-		}
-	}
 }
 
 func (c *creature) DragTo(at Vec) { c.dragTo = at }
@@ -607,19 +515,8 @@ func (c *creature) LegStates() []legState {
 	return out
 }
 
-// silkLen is the length of the strands currently hung.
-func (c *creature) silkLen() float64 {
-	longest := 0.0
-	for _, s := range c.strands {
-		longest = math.Max(longest, s.maxLen)
-	}
-	return longest
-}
-
-// summary is a one-line description, handy at the prompt.
 func (c *creature) summary() string {
-	return fmt.Sprintf("%d legs, %d silk strands, body %gx%g", len(c.legs), len(c.strands),
-		c.bodyLength*2, c.bodyWidth*2)
+	return fmt.Sprintf("%d legs, body %gx%g", len(c.legs), c.bodyLength*2, c.bodyWidth*2)
 }
 
 func (c *creature) plantedCount() int {
@@ -653,7 +550,6 @@ func (c *creature) Update(dt float64) {
 	c.steerBody(dt, walkDir, walking)
 	c.placeBody()
 	c.updateLegs(dt, walkDir, walking)
-	c.updateStrands(dt)
 	c.w.step(dt)
 	for _, lg := range c.legs {
 		if lg.air {
@@ -1091,36 +987,6 @@ func (c *creature) startStep(lg *leg, walkDir Vec, walking bool) {
 	lg.dur = clampf(0.08+0.11*(lg.to.Sub(lg.from).Len()/lg.limit), 0.08, 0.24)
 	if c.dragging {
 		lg.dur *= 0.7
-	}
-}
-
-// updateStrands advances the silk. A strand that goes taut slips its anchor,
-// then fades and is re-laid near the creature, leaving a trail behind it.
-func (c *creature) updateStrands(dt float64) {
-	for _, s := range c.strands {
-		far := s.nodes[strandNodes-1]
-		d := far.pos.Sub(s.nodes[0].pos).Len()
-		s.taut = clamp01((d/s.maxLen - 0.35) / 0.45)
-		if !s.dying && d > s.maxLen*0.78 {
-			s.dying = true
-			far.invMass = 0.4
-		}
-		if s.dying {
-			s.fade -= dt / 0.7
-			if s.fade <= 0 {
-				c.layStrand(s)
-			}
-			continue
-		}
-		s.fade = math.Min(1, s.fade+dt*1.6)
-		for i, p := range s.nodes {
-			if p.invMass == 0 {
-				continue
-			}
-			ph := s.phase[i]
-			// Slow drifting force: keeps the silk wavy rather than dead straight.
-			accel(p, V(math.Sin(c.time*1.1+ph), math.Cos(c.time*0.9+ph*1.7)).Mul(24))
-		}
 	}
 }
 

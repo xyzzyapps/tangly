@@ -64,7 +64,6 @@ const (
 
 	vkLeftButton  = 0x01
 	vkRightButton = 0x02
-	vkShift       = 0x10
 )
 
 type wndClassEx struct {
@@ -216,7 +215,6 @@ func (o *overlay) pointer() pointerState {
 	cur, inside := o.cursor()
 	left, leftFresh := keyState(vkLeftButton)
 	right, rightFresh := keyState(vkRightButton)
-	shift, _ := keyState(vkShift)
 
 	// GetAsyncKeyState's "pressed since the last call" bit means nothing on the
 	// first call, and the pointer starts over the creature, so without this the
@@ -231,7 +229,6 @@ func (o *overlay) pointer() pointerState {
 		pos: cur, inside: inside,
 		left: left, leftFresh: leftFresh,
 		right: right, rightFresh: rightFresh,
-		shift: shift,
 	}
 }
 

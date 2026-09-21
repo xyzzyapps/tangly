@@ -183,7 +183,6 @@ func (h *scriptHost) saveScript() error {
 		fmt.Fprintf(&b, "  {angle: %g, reach: %g},\n", lg.spec.angle, lg.spec.reach)
 	}
 	b.WriteString("]);\n")
-	fmt.Fprintf(&b, "tangly.silk(%d, %g);\n", len(c.strands), c.silkLen())
 	fmt.Fprintf(&b, "tangly.gait({speed: %g, agility: %g, turnRate: %g, arrive: %g});\n",
 		c.maxSpeed, c.agility, c.turnRate, c.arriveRadius)
 	return os.WriteFile(h.scriptPath, []byte(b.String()), 0o644)
@@ -197,7 +196,7 @@ func (h *scriptHost) install() {
 	// -- structure ---------------------------------------------------------
 	must(tangly.Set("clear", func(goja.FunctionCall) goja.Value {
 		d := h.creature().def()
-		d.Legs, d.SilkCount = nil, 0
+		d.Legs = nil
 		h.game.rebuild(func(c *creature) { c.applyDef(d) })
 		return vm.ToValue(h.creature().summary())
 	}))
@@ -240,15 +239,6 @@ func (h *scriptHost) install() {
 		}
 		d := h.creature().def()
 		d.Legs = legsFromArray(vm, call.Argument(0))
-		h.game.rebuild(func(c *creature) { c.applyDef(d) })
-		return vm.ToValue(h.creature().summary())
-	}))
-
-	must(tangly.Set("silk", func(call goja.FunctionCall) goja.Value {
-		obj := call.Argument(0).ToObject(vm)
-		d := h.creature().def()
-		d.SilkCount = int(numField(vm, obj, "count", float64(d.SilkCount)))
-		d.SilkLen = numField(vm, obj, "length", d.SilkLen)
 		h.game.rebuild(func(c *creature) { c.applyDef(d) })
 		return vm.ToValue(h.creature().summary())
 	}))
@@ -340,8 +330,6 @@ func (h *scriptHost) install() {
 			"bodyLength": d.BodyLength,
 			"bodyWidth":  d.BodyWidth,
 			"legs":       legs,
-			"silkCount":  d.SilkCount,
-			"silkLen":    d.SilkLen,
 		})
 	}))
 
@@ -496,7 +484,6 @@ func (h *scriptHost) install() {
 		set("joint", &st.jointRadius, 2.0)
 		set("ring", &st.ringWidth, 1.8)
 		set("body", &st.bodyWidth, 1.3)
-		set("silk", &st.silkWidth, 0.7)
 		return vm.ToValue("pen updated")
 	}))
 
@@ -574,7 +561,6 @@ tangly.body(half)                     square body, or body({length, width})
 tangly.leg({angle, reach})            add one leg, angle in degrees from the head
 tangly.legs([{angle, reach}, ...])    replace every leg
 tangly.legs()                         read every leg back: stance, off-line, planted
-tangly.silk({count, length})          re-hang the silk
 tangly.clear()  tangly.reset()        strip it back, or rebuild the shipped creature
 
 -- behaviour
@@ -588,7 +574,7 @@ tangly.moveTo(x, y)  tangly.grab(x, y)  tangly.drop()
 -- look
 tangly.color(part, [r,g,b,a])         part: legCore, legBloom, legThread, legHalo,
                                       knee, ring, ringBloom, ringRim, bodyFill,
-                                      bodyEdge, bodyDot, bodyEye, silk
+                                      bodyEdge, bodyDot, bodyEye
 tangly.pen({halo, bloom, leg, thread, joint, ring, body, silk})
 tangly.ring(radius)  tangly.feet(true|false)
 
@@ -696,8 +682,6 @@ func setStyleColor(st *style, part string, r, g, b, a uint8) bool {
 		st.bodyDot = c
 	case "bodyEye":
 		st.bodyEye = c
-	case "silk":
-		st.silk = c
 	default:
 		return false
 	}

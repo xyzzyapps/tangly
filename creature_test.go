@@ -265,8 +265,8 @@ func TestLegAddedAtRuntimeWalks(t *testing.T) {
 	// And it must come off again cleanly.
 	before := len(c.w.parts)
 	c.clear()
-	if len(c.legs) != 0 || len(c.strands) != 0 {
-		t.Fatalf("clear left %d legs and %d strands", len(c.legs), len(c.strands))
+	if len(c.legs) != 0 {
+		t.Fatalf("clear left %d legs", len(c.legs))
 	}
 	if len(c.w.parts) >= before {
 		t.Fatalf("clear left particles behind: %d -> %d", before, len(c.w.parts))

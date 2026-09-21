@@ -43,7 +43,6 @@ func (p *ebitenPresenter) pointer() pointerState {
 		leftFresh:  inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft),
 		right:      ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight),
 		rightFresh: inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight),
-		shift:      ebiten.IsKeyPressed(ebiten.KeyShift),
 	}
 }
 

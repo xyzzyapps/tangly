@@ -38,9 +38,6 @@ type game struct {
 	leftDown  bool
 	rightDown bool
 	grab      bool
-	winDrag   bool
-	dragMouse Vec
-	dragWin   [2]int32
 	quit      bool
 
 	// paused freezes the simulation; step runs a few ticks while frozen, which is
@@ -147,15 +144,9 @@ func (g *game) handleMouse(ptr pointerState) {
 	cur, inside := ptr.pos, ptr.inside
 	left, leftFresh := ptr.left, ptr.leftFresh
 	right, rightFresh := ptr.right, ptr.rightFresh
-	shift := ptr.shift
 
 	if (leftFresh || (left && !g.leftDown)) && inside {
 		switch {
-		case shift:
-			g.winDrag = true
-			g.dragMouse = cur
-			x, y, _, _ := g.p.rect()
-			g.dragWin = [2]int32{x, y}
 		case g.c.NearBody(cur, 34):
 			g.grab = true
 			g.c.BeginDrag(cur)
@@ -169,16 +160,12 @@ func (g *game) handleMouse(ptr pointerState) {
 		g.quit = true
 	}
 	if !left {
-		g.winDrag = false
 		if g.grab {
 			g.grab = false
 			g.c.EndDrag()
 		}
 	}
 
-	if g.winDrag {
-		g.p.move(g.dragWin[0]+int32(cur.X-g.dragMouse.X), g.dragWin[1]+int32(cur.Y-g.dragMouse.Y))
-	}
 	if g.grab {
 		g.c.DragTo(cur)
 	}
@@ -220,7 +207,7 @@ func main() {
 	g.script = newScriptHost(g, scriptPath)
 
 	log.Printf("tangly awake: %s", g.c.summary())
-	log.Println("click its corner of the desktop: it walks there | drag its body: carry it | shift+drag: move its corner")
+	log.Println("click its corner of the desktop: it walks there | drag its body: carry it")
 	log.Println("right-click on it (or Esc): quit | wheel over it: volume | M: mute | F: always on top")
 	log.Printf("repl: type at this console (help() lists the api). %s reloads on save.", scriptPath)
 
