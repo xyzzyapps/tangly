@@ -130,7 +130,11 @@ func (g *game) Update() error {
 	if g.script != nil {
 		g.script.drain()
 	}
-	if g.quit || g.quitting.Load() {
+	if g.quitting.Load() {
+		log.Println("quit: from the prompt")
+		return ebiten.Termination
+	}
+	if g.quit {
 		return ebiten.Termination
 	}
 	return nil
@@ -161,6 +165,7 @@ func (g *game) handleMouse(ptr pointerState) {
 		}
 	}
 	if (rightFresh || (right && !g.rightDown)) && inside && g.c.NearBody(cur, 44) {
+		log.Println("quit: right-clicked")
 		g.quit = true
 	}
 	if !left {

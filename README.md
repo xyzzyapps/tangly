@@ -2,7 +2,7 @@
 
 [![Built with DeepSeek](https://img.shields.io/badge/built_with-DeepSeek-4D6BFE)](https://deepseek.com)
 
-A ten-legged creature that lives on your desktop. It walks to where you click,
+A eight-legged creature that lives on your desktop. It walks to where you click,
 trails silk, makes very small noises, and can be taken apart and rebuilt live
 from a REPL while it is running.
 

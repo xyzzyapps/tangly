@@ -161,6 +161,7 @@ type overlay struct {
 	posX, posY int32
 
 	mu        sync.Mutex
+	primed    bool
 	seq       uint64
 	queued    []overlayEvent
 	closed    bool
@@ -216,6 +217,16 @@ func (o *overlay) pointer() pointerState {
 	left, leftFresh := keyState(vkLeftButton)
 	right, rightFresh := keyState(vkRightButton)
 	shift, _ := keyState(vkShift)
+
+	// GetAsyncKeyState's "pressed since the last call" bit means nothing on the
+	// first call, and the pointer starts over the creature, so without this the
+	// first frame looks like a fresh right-click on it and the pet quits at once.
+	o.mu.Lock()
+	if !o.primed {
+		o.primed = true
+		leftFresh, rightFresh = false, false
+	}
+	o.mu.Unlock()
 	return pointerState{
 		pos: cur, inside: inside,
 		left: left, leftFresh: leftFresh,

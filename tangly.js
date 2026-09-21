@@ -17,16 +17,13 @@
 tangly.body({length: 16, width: 11});
 
 // A leg is a direction around the body, in degrees from the head, and a natural
-// length in pixels. Ten legs, exactly 36 degrees apart all the way round, so
-// they stay evenly spread including across the head and the tail. The reaches
-// vary so the outline is not a perfect circle.
+// length in pixels. Four a side, 36 degrees apart, each the mirror of the one
+// across the body. The reaches vary so the outline is not a perfect circle.
 tangly.legs([
   {angle: 18, reach: 126},
   {angle: 54, reach: 118},
   {angle: 90, reach: 102},
   {angle: 126, reach: 114},
-  {angle: 162, reach: 124},
-  {angle: -162, reach: 124},
   {angle: -126, reach: 114},
   {angle: -90, reach: 102},
   {angle: -54, reach: 118},

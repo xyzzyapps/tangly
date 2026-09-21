@@ -9,7 +9,7 @@ import (
 const (
 	// legCount and strandCount describe the shipped creature; a script can build
 	// any number of either.
-	legCount    = 10
+	legCount    = 8
 	strandCount = 9
 	strandNodes = 6
 
@@ -213,10 +213,11 @@ type creatureDef struct {
 // defaultDef is the creature as it ships: ten legs fanned around a square body
 // with a trail of silk.
 func defaultDef() creatureDef {
-	// Ten legs, exactly 36 degrees apart all the way round, so the fan is even
-	// including across the head and the tail.
-	angles := []float64{18, 54, 90, 126, 162, -162, -126, -90, -54, -18}
-	reaches := []float64{126, 118, 102, 114, 124, 124, 114, 102, 118, 126}
+	// Four legs a side, 36 degrees apart, mirror images of each other across the
+	// body. Nothing at the very back: the pair that used to sit there crowded the
+	// ones in front of it.
+	angles := []float64{18, 54, 90, 126, -126, -90, -54, -18}
+	reaches := []float64{126, 118, 102, 114, 114, 102, 118, 126}
 	d := creatureDef{BodyLength: defaultBodyLength, BodyWidth: defaultBodyWidth, SilkCount: 9, SilkLen: 300}
 	for i, a := range angles {
 		d.Legs = append(d.Legs, legDef{Angle: a, Reach: reaches[i]})

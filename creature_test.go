@@ -3,7 +3,6 @@ package main
 import (
 	"math"
 	"math/rand/v2"
-	"sort"
 	"testing"
 )
 
@@ -264,26 +263,35 @@ func TestLegAddedAtRuntimeWalks(t *testing.T) {
 	}
 }
 
-// The shipped creature's legs are spread evenly around the body, head and tail
-// included, so no two legs crowd each other.
-func TestLegsAreEvenlySpaced(t *testing.T) {
+// The shipped fan: legs evenly spaced within each side, each the mirror of the one
+// across the body, and nothing crowding at the back.
+func TestLegFanIsEvenAndClearAtTheBack(t *testing.T) {
 	d := defaultDef()
-	if len(d.Legs) < 3 {
-		t.Fatalf("only %d legs to space out", len(d.Legs))
+	n := len(d.Legs)
+	if n%2 != 0 {
+		t.Fatalf("%d legs do not come in pairs", n)
 	}
-	want := 360.0 / float64(len(d.Legs))
-	angles := make([]float64, 0, len(d.Legs))
-	for _, ld := range d.Legs {
-		a := math.Mod(ld.Angle+360, 360)
-		angles = append(angles, a)
-	}
-	sort.Float64s(angles)
-	for i := range angles {
-		got := math.Mod(angles[(i+1)%len(angles)]-angles[i]+360, 360)
-		if math.Abs(got-want) > 0.5 {
-			t.Fatalf("gap between legs %d and %d is %.1f degrees, want %.1f",
-				i, (i+1)%len(angles), got, want)
+	perSide := n / 2
+
+	for i := range perSide {
+		a, b := d.Legs[i], d.Legs[n-1-i]
+		if math.Abs(a.Angle+b.Angle) > 0.01 || math.Abs(a.Reach-b.Reach) > 0.01 {
+			t.Fatalf("leg %d (%g deg, %g) is not the mirror of leg %d (%g deg, %g)",
+				i, a.Angle, a.Reach, n-1-i, b.Angle, b.Reach)
 		}
+	}
+	for i := range perSide - 1 {
+		gap := d.Legs[i+1].Angle - d.Legs[i].Angle
+		if math.Abs(gap-36) > 0.5 {
+			t.Fatalf("legs %d and %d are %g degrees apart, want 36", i, i+1, gap)
+		}
+	}
+
+	// The gap between the two rearmost legs: wide enough that they cannot foul each
+	// other, which is why the pair that used to sit there was taken out.
+	tailGap := 360 - math.Abs(d.Legs[perSide-1].Angle) - math.Abs(d.Legs[perSide].Angle)
+	if tailGap < 90 {
+		t.Fatalf("the rear legs are only %g degrees apart", tailGap)
 	}
 }
 
