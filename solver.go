@@ -84,10 +84,24 @@ func (c *constraint) solveHinge(passes float64) {
 	// Rotate the ends about the middle, then the middle about each end, exactly as
 	// verlet-js does. The two halves of the last step overlap, so the middle joint
 	// takes up the slack and the chain settles instead of spinning.
+	//
+	// verlet-js can rotate all three because everything in it is a free particle. Here
+	// the ends of a hinge can be a planted foot or the body, which the animation places
+	// and nothing may move: those are put back, and the free end takes the rotation.
+	ka, kb, kc := c.a.pos, c.b.pos, c.c.pos
 	c.a.pos = c.a.pos.RotAbout(c.b.pos, diff)
 	c.c.pos = c.c.pos.RotAbout(c.b.pos, -diff)
 	c.b.pos = c.b.pos.RotAbout(c.a.pos, diff)
 	c.b.pos = c.b.pos.RotAbout(c.c.pos, -diff)
+	if c.a.invMass == 0 {
+		c.a.pos = ka
+	}
+	if c.b.invMass == 0 {
+		c.b.pos = kb
+	}
+	if c.c.invMass == 0 {
+		c.c.pos = kc
+	}
 }
 
 // solve applies one relaxation pass. A stiffness of 1 means rigid and is applied
@@ -204,12 +218,16 @@ func (w *world) step(dt float64) {
 	// of the ones after them. This does not stiffen the hinges -- they are still
 	// corrected every pass, and a leg still bends and springs -- it only stops the
 	// give showing up as a bone changing length.
-	for range 4 {
+	for range 8 {
 		for j := range w.cons {
 			if w.cons[j].kind != hingeLen && w.cons[j].stiff >= 1 {
 				w.cons[j].solve(passes)
 			}
 		}
+	}
+	// Projections can push a joint over the edge, so the walls get the last word.
+	for _, p := range w.parts {
+		w.clampInside(p)
 	}
 	for _, p := range w.parts {
 		p.force = Vec{}
@@ -238,7 +256,11 @@ func (w *world) forget(dead map[*particle]bool) {
 
 // clampInside keeps particles in the window, killing the wall-normal velocity.
 func (w *world) clampInside(p *particle) {
+	// Kinematic particles are clamped too: the animation places them, and a
+	// placement outside the window is still outside the window.
 	if p.invMass == 0 {
+		p.pos = w.bounds.clampVec(p.pos, 0)
+		p.prev = p.pos
 		return
 	}
 	if p.pos.X < w.bounds.minX {
