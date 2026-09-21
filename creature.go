@@ -54,8 +54,10 @@ const (
 	// the lead wants to be as long as the geometry allows, so that a step covers
 	// ground instead of flickering. restSpread is how far a planted foot may drift
 	// out of line before the creature steps it back.
-	legLead    = 0.55
-	legSide    = 0.68
+	legLead = 0.55
+	legSide = 0.68
+	// maxTrail is how far a drawn joint may lag its bone, in pixels.
+	maxTrail   = 10.0
 	restSpread = 8.0
 	// dragFrom is the span at which a planted leg starts to hold the body back,
 	// and settleFor is how long the creature spends putting its legs back in line
@@ -340,10 +342,11 @@ func (c *creature) addLeg(d legDef) *leg {
 
 	chord := outward.Mul(spec.reach * 0.9)
 	n := chord.Perp().Norm()
-	// Bow the knee towards the leg's own side of the body. Bowing every leg the
-	// same way round makes the front and rear knees lean into each other, which
-	// is what tangled the legs.
-	if n.Dot(perp.Mul(sign(spec.lateral))) < 0 {
+	// Every knee bows towards the head. A leg pointing straight out to the side has
+	// no "outwards" perpendicular to bow along -- its perpendicular runs fore and
+	// aft -- so the bow is defined against the body's axis instead. That is the same
+	// rule for both sides, which is what keeps a leg and its mirror image mirrored.
+	if n.Dot(axis) < 0 {
 		n = n.Mul(-1)
 	}
 	// The bowed layout sets the proportions of the three bones; the foot itself
@@ -851,10 +854,7 @@ func (c *creature) updateLegs(dt float64, walkDir Vec, walking bool) {
 	if gait {
 		cycle = c.strideCycle()
 		if !c.wasWalking {
-			// Start the wave at the legs nearest the head and run it backwards.
-			for k, lg := range c.legs {
-				lg.nextStep = cycle * float64(k) / float64(len(c.legs))
-			}
+			c.staggerWalk(cycle)
 		}
 		for _, lg := range c.legs {
 			if lg.nextStep > 0 {
@@ -916,16 +916,25 @@ func (c *creature) updateLegs(dt float64, walkDir Vec, walking bool) {
 // weight to it rather than snapping.
 func (c *creature) followBody(dt float64) {
 	k := 1 - math.Exp(-c.bodyFollow*dt)
-	c.drawnPos = c.drawnPos.Add(c.pos.Sub(c.drawnPos).Mul(k))
+	c.drawnPos = trail(c.drawnPos, c.pos, k)
 	c.drawnAngle += math.Remainder(c.angle-c.drawnAngle, 2*math.Pi) * k
 }
 
 // follow trails a leg's joints behind their exact positions. The foot is not
-// trailed: it stays where it was planted.
+// trailed: it stays where it was planted. A joint never trails further than
+// maxTrail, so a fast swing reads as weight rather than a leg coming apart.
 func (lg *leg) follow(dt, rate float64) {
 	k := 1 - math.Exp(-rate*dt)
-	lg.drawnKnee = lg.drawnKnee.Add(lg.knee.pos.Sub(lg.drawnKnee).Mul(k))
-	lg.drawnShin = lg.drawnShin.Add(lg.shin.pos.Sub(lg.drawnShin).Mul(k))
+	lg.drawnKnee = trail(lg.drawnKnee, lg.knee.pos, k)
+	lg.drawnShin = trail(lg.drawnShin, lg.shin.pos, k)
+}
+
+func trail(from, to Vec, k float64) Vec {
+	p := from.Add(to.Sub(from).Mul(k))
+	if d := p.Sub(to); d.Len() > maxTrail {
+		p = to.Add(d.Norm().Mul(maxTrail))
+	}
+	return p
 }
 
 // drawnBody is the shell as drawn, and drawnAxis its heading.
@@ -970,6 +979,31 @@ func (c *creature) separateDirection(lg *leg, dir Vec, minGapDeg float64) Vec {
 	return dir
 }
 
+// staggerWalk hands out the walking cycle: a leg's turn comes a little later than
+// the leg in front of it on the same side, and the other side runs half a cycle
+// behind its mirror. That is an alternating gait -- a leg and its mirror are never
+// in the air together -- rather than the whole fan marching round in one
+// direction.
+func (c *creature) staggerWalk(cycle float64) {
+	n := len(c.legs)
+	if n == 0 {
+		return
+	}
+	perSide := n / 2
+	for k, lg := range c.legs {
+		idx := k % perSide
+		if k >= perSide {
+			// The far side is listed back to front, so count from its end.
+			idx = (n - 1 - k) % perSide
+		}
+		phase := float64(idx) / float64(perSide)
+		if k >= perSide {
+			phase += 0.5
+		}
+		lg.nextStep = math.Mod(phase, 1) * cycle
+	}
+}
+
 // strideCycle is how long one full walking cycle takes: long enough that the body
 // covers a stride's worth of ground between a leg's turns, and quicker when the
 // creature is hurrying.
@@ -991,7 +1025,8 @@ func (c *creature) neighbourInAir(i int) bool {
 	if n == 0 {
 		return false
 	}
-	for _, d := range [...]int{1, -1, n / 2} {
+	// Neighbours either side of it in the fan, and its mirror on the other side.
+	for _, d := range [...]int{1, -1, n - 1 - 2*i} {
 		j := ((i+d)%n + n) % n
 		if c.legs[j].air {
 			return true

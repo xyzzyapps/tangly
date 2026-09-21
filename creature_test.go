@@ -433,3 +433,52 @@ func TestWalkTakesStrides(t *testing.T) {
 		t.Fatalf("%.1f legs airborne on average", mean)
 	}
 }
+
+// The creature is bilaterally symmetric: a leg and its mirror image on the other
+// side of the body are reflections of each other, joints and all. Building the bow
+// direction from the body's midline broke the pair pointing straight sideways.
+func TestLegsAreMirrorSymmetric(t *testing.T) {
+	c := testCreature(5)
+	body, axis := c.drawnBody()
+	perp := axis.Perp()
+	type joints struct{ knee, shin, tip Vec }
+	read := func(lg *leg) joints {
+		to := func(v Vec) Vec { d := v.Sub(body); return V(d.Dot(axis), d.Dot(perp)) }
+		return joints{to(lg.knee.pos), to(lg.shin.pos), to(lg.tip.pos)}
+	}
+	n := len(c.legs)
+	for i := range n / 2 {
+		a, b := read(c.legs[i]), read(c.legs[n-1-i])
+		for _, pair := range [][2]Vec{{a.knee, b.knee}, {a.shin, b.shin}, {a.tip, b.tip}} {
+			fa, fb := pair[0], pair[1]
+			if math.Abs(fa.X-fb.X) > 0.5 || math.Abs(fa.Y+fb.Y) > 0.5 {
+				t.Fatalf("leg %d is not the mirror of leg %d: %.1f,%.1f against %.1f,%.1f",
+					i, n-1-i, fa.X, fa.Y, fb.X, fb.Y)
+			}
+		}
+	}
+}
+
+// The gait alternates: a leg and its mirror are never in the air together, which
+// is what stops the walk reading as one sweep round the body.
+func TestGaitAlternatesSides(t *testing.T) {
+	c := testCreature(13)
+	c.SetTarget(c.w.bounds.clampVec(c.pos.Add(V(240, 100)), bodyMargin))
+
+	overlap := make([]int, len(c.legs)/2)
+	for range 60 * 14 {
+		c.Update(testDt)
+		checkSane(t, c)
+		n := len(c.legs)
+		for i := range n / 2 {
+			if c.legs[i].air && c.legs[n-1-i].air {
+				overlap[i]++
+			}
+		}
+	}
+	for i, o := range overlap {
+		if o > 4 {
+			t.Fatalf("leg %d and its mirror were in the air together for %d ticks", i, o)
+		}
+	}
+}
