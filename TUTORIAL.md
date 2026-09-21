@@ -152,6 +152,7 @@ tangly> tangly.angle(90)                 // face east
 tangly> tangly.stand()                   // re-plant every foot at once
 tangly> tangly.scurry()                  // startle it for a moment
 tangly> tangly.watch(false)              // stop it following the pointer
+tangly> tangly.follow({legs: 55, body: 16})   // how much the joints and shell trail
 tangly> tangly.wander(true)              // let it potter about on its own
 tangly> tangly.wander({every: 5, chance: 0.9, radius: 40, radiusMax: 120, speed: 0.3})
 ```
@@ -166,6 +167,10 @@ tangly> tangly.wander({every: 5, chance: 0.9, radius: 40, radiusMax: 120, speed:
   the creature's corner of the desktop.
 - `settle(seconds)` sets how long it spends stepping its feet back into line
   after a walk.
+- `follow` is the drawn pose trailing the physics: the joints catch up at `legs`
+  per second and the shell at `body`, which is where the creature's sense of
+  weight comes from. The feet themselves are never trailed — they stay exactly
+  where they are planted. `follow({legs: 0, body: 0})` snaps it rigid.
 
 ---
 
@@ -232,6 +237,11 @@ can still cover it.
 **It will not stop moving.** `tangly.wander(false)`, and `tangly.watch(false)`
 if it is turning to follow your pointer. Standing still it should take no steps
 at all: `tangly.legs()` will show you if something is cycling.
+
+**The desktop behind it is not clickable** (macOS and Linux). Ebitengine's
+transparent window takes the mouse over its whole rectangle there, where the
+Windows layered window only takes it where the creature is drawn. Everything
+outside its patch is unaffected. `tangly.frame()` shows you the rectangle.
 
 **No sound.** `tangly.mute()` reports the state, `tangly.volume(0.2)` sets it.
 The creature is deliberately quiet, and it only plays while the pointer is over

@@ -51,7 +51,12 @@ type constraint struct {
 	kind   ckind
 }
 
-func (c *constraint) solve() {
+// solve applies one relaxation pass. A stiffness of 1 means rigid and is applied
+// as such; anything softer is divided by the number of passes, the way verlet-js
+// scales its constraints by 1/step. That keeps a soft constraint's meaning the
+// same whether the solver runs four passes or forty -- more passes only converge
+// it better -- while rigid constraints stay exactly rigid.
+func (c *constraint) solve(passes float64) {
 	l := c.b.pos.Sub(c.a.pos).Len()
 	if l < 1e-9 {
 		return
@@ -72,7 +77,11 @@ func (c *constraint) solve() {
 	if w == 0 {
 		return
 	}
-	corr := (l - c.length) / l * c.stiff
+	stiff := c.stiff
+	if stiff < 1 {
+		stiff /= passes
+	}
+	corr := (l - c.length) / l * stiff
 	d := c.b.pos.Sub(c.a.pos)
 	c.a.pos = c.a.pos.Add(d.Mul(corr * wa / w))
 	c.b.pos = c.b.pos.Sub(d.Mul(corr * wb / w))
@@ -108,7 +117,9 @@ func (w *world) link(a, b *particle, length, stiff float64, kind ckind) {
 	w.cons = append(w.cons, constraint{a: a, b: b, length: length, stiff: stiff, kind: kind})
 }
 
-// step integrates every particle and then relaxes the constraint graph.
+// step integrates every particle and then relaxes the constraint graph. The
+// relaxation order is the iteration count from the world, scaled inside each
+// constraint so that softness does not depend on it.
 func (w *world) step(dt float64) {
 	dt2 := dt * dt
 	for _, p := range w.parts {
@@ -122,9 +133,13 @@ func (w *world) step(dt float64) {
 		p.prev = p.pos
 		p.pos = p.pos.Add(v).Add(p.force.Mul(p.invMass).Mul(dt2))
 	}
-	for i := 0; i < w.iters; i++ {
+	passes := float64(w.iters)
+	if passes < 1 {
+		passes = 1
+	}
+	for range w.iters {
 		for j := range w.cons {
-			w.cons[j].solve()
+			w.cons[j].solve(passes)
 		}
 		for _, p := range w.parts {
 			w.clampInside(p)

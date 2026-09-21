@@ -5,6 +5,8 @@ spider
 spider.exe
 *.exe
 *.exe~
+tangly-linux
+tangly-mac
 
 # local scratch
 *.log

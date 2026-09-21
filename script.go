@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"reflect"
 	"strconv"
@@ -324,7 +325,7 @@ func (h *scriptHost) install() {
 		obj := call.Argument(0).ToObject(vm)
 		x := int32(numField(vm, obj, "x", 0))
 		y := int32(numField(vm, obj, "y", 0))
-		h.game.ov.move(x, y)
+		h.game.p.move(x, y)
 		return vm.ToValue("moved")
 	}))
 
@@ -422,6 +423,14 @@ func (h *scriptHost) install() {
 		return vm.ToValue("standing")
 	}))
 
+	must(tangly.Set("follow", func(call goja.FunctionCall) goja.Value {
+		obj := call.Argument(0).ToObject(vm)
+		c := h.creature()
+		c.legFollow = math.Max(0, numField(vm, obj, "legs", c.legFollow))
+		c.bodyFollow = math.Max(0, numField(vm, obj, "body", c.bodyFollow))
+		return vm.ToValue(map[string]any{"legs": c.legFollow, "body": c.bodyFollow})
+	}))
+
 	must(tangly.Set("settle", func(call goja.FunctionCall) goja.Value {
 		v := floatArg(call, 0, settleFor)
 		h.creature().settleTimer = v
@@ -509,7 +518,7 @@ func (h *scriptHost) install() {
 		if v := call.Argument(0); v != nil && !goja.IsUndefined(v) {
 			on = v.ToBoolean()
 		}
-		h.game.ov.setTopmost(on)
+		h.game.p.topmost(on)
 		return vm.ToValue(on)
 	}))
 
@@ -527,16 +536,17 @@ func (h *scriptHost) install() {
 	}))
 
 	must(tangly.Set("frame", func(goja.FunctionCall) goja.Value {
-		opaque, partial, transparent := h.game.ov.frameStats()
-		x, y, w, hh := h.game.ov.rect()
-		return vm.ToValue(map[string]any{
-			"opaque": opaque, "partial": partial, "transparent": transparent,
-			"window": map[string]any{"x": x, "y": y, "w": w, "h": hh},
-		})
+		opaque, partial, transparent, ok := h.game.p.frameStats()
+		x, y, w, hh := h.game.p.rect()
+		out := map[string]any{"window": map[string]any{"x": x, "y": y, "w": w, "h": hh}}
+		if ok {
+			out["opaque"], out["partial"], out["transparent"] = opaque, partial, transparent
+		}
+		return vm.ToValue(out)
 	}))
 
 	must(tangly.Set("screen", func(goja.FunctionCall) goja.Value {
-		w, h := screenSize()
+		w, h := h.game.p.screenSize()
 		return vm.ToValue(map[string]any{"width": w, "height": h})
 	}))
 
@@ -557,6 +567,7 @@ tangly.particles()  tangly.tps()      how big and how fast it is running
 tangly.place(x, y)  tangly.angle(deg) put the body somewhere, facing somewhere
 tangly.stand()                        every foot straight back to its own spot
 tangly.settle(seconds)                how long it re-settles after a walk
+tangly.follow({legs, body})           how much the joints and shell trail
 
 -- body and legs
 tangly.body(half)                     square body, or body({length, width})

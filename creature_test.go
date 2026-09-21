@@ -349,3 +349,87 @@ func TestEveryLegStepsWhileWalking(t *testing.T) {
 		t.Fatalf("legs stepped very unevenly: %v", counts)
 	}
 }
+
+// The drawn joints trail the exact solution for weight, but they must stay close
+// and must catch up: a leg hanging behind its own bones would be a bug, not style.
+func TestDrawnJointsTrailAndCatchUp(t *testing.T) {
+	c := testCreature(71)
+	c.SetTarget(c.w.bounds.clampVec(c.pos.Add(V(200, -140)), bodyMargin))
+
+	maxLag := 0.0
+	for range 60 * 8 {
+		c.Update(testDt)
+		checkSane(t, c)
+		for _, lg := range c.legs {
+			maxLag = max(maxLag, lg.drawnKnee.Sub(lg.knee.pos).Len(), lg.drawnShin.Sub(lg.shin.pos).Len())
+		}
+	}
+	if maxLag > 25 {
+		t.Fatalf("drawn joints trail %.1f px behind their bones", maxLag)
+	}
+
+	c.SetTarget(c.pos)
+	for range 60 * 3 {
+		c.Update(testDt)
+	}
+	for i, lg := range c.legs {
+		if d := lg.drawnKnee.Sub(lg.knee.pos).Len(); d > 1.5 {
+			t.Fatalf("leg %d knee is still %.2f px behind after settling", i, d)
+		}
+		if d := lg.drawnShin.Sub(lg.shin.pos).Len(); d > 1.5 {
+			t.Fatalf("leg %d shin is still %.2f px behind after settling", i, d)
+		}
+	}
+}
+
+// A walk has to be made of strides, not flicks. Feet that land barely ahead of
+// where they left are re-stretched at once, and the creature reads as twitching
+// rather than walking.
+func TestWalkTakesStrides(t *testing.T) {
+	c := testCreature(9)
+	c.SetTarget(c.w.bounds.clampVec(c.pos.Add(V(260, 0)), bodyMargin))
+
+	var swings, durs []float64
+	last := 0
+	airborne, samples := 0, 0
+	for range 60 * 25 {
+		c.Update(testDt)
+		checkSane(t, c)
+		if c.hasTarget {
+			airborne += c.airCount()
+			samples++
+		}
+		if c.stepCount == last {
+			continue
+		}
+		last = c.stepCount
+		for _, lg := range c.legs {
+			if lg.air && lg.swing < 0.05 {
+				swings = append(swings, lg.to.Sub(lg.from).Len())
+				durs = append(durs, lg.dur)
+			}
+		}
+	}
+	mean := func(v []float64) float64 {
+		if len(v) == 0 {
+			return 0
+		}
+		sum := 0.0
+		for _, x := range v {
+			sum += x
+		}
+		return sum / float64(len(v))
+	}
+	if len(swings) < 5 {
+		t.Fatalf("only %d steps taken to judge", len(swings))
+	}
+	if got := mean(swings); got < 40 {
+		t.Fatalf("feet only swing %.0f px: the walk is flickering", got)
+	}
+	if speed := mean(swings) / mean(durs); speed > 600 {
+		t.Fatalf("feet swing at %.0f px/s: a flick, not a step", speed)
+	}
+	if mean := float64(airborne) / float64(samples); mean > 2 {
+		t.Fatalf("%.1f legs airborne on average", mean)
+	}
+}

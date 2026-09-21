@@ -52,13 +52,14 @@ look → sound → window. [TUTORIAL.md](TUTORIAL.md) walks through it.
 
 ## How it works
 
-**Rendering and presentation are separate.** Ebitengine draws the creature into
-an offscreen image; a layered Win32 window with per-pixel alpha presents it
-(`UpdateLayeredWindow`). That split is deliberate: Ebitengine can only present a
-transparent window through DXGI composition, and on machines where that is
-unavailable its window is created with a redirection surface and the alpha is
-discarded — you get an opaque rectangle. The creature does not care; it is
-rendered the same either way.
+**Rendering and presentation are separate.** The game draws into whatever surface
+the platform hands it, behind a small `presenter` interface. On Windows that is a
+layered Win32 window of our own with per-pixel alpha (`UpdateLayeredWindow`),
+because Ebitengine can only present a transparent window through DXGI
+composition, and on machines where that is unavailable its window is created with
+a redirection surface and the alpha is discarded — you get an opaque rectangle.
+On macOS and on Linux with a compositor, Ebitengine's own transparent window is
+used directly. The creature is drawn identically either way.
 
 **The creature is a constraint system.** A Verlet solver with distance and rope
 constraints drives everything: the silk is a rope that slips loose rather than
@@ -87,16 +88,31 @@ script.
 | `solver.go` | particles, constraints, the world step |
 | `render.go` | straight jointed legs, rectangular body, scriptable palette |
 | `audio.go` | the four voices |
-| `overlay_windows.go` | the layered window and global input |
+| `presenter.go` | the interface the creature is shown through |
+| `present_windows.go` | the layered window, per-pixel alpha, global input |
+| `present_ebiten.go` | Ebitengine's own transparent window (macOS, Linux) |
 | `script.go` | the JavaScript prompt (goja — pure Go, no cgo) |
 | `tangly.js` | the creature's definition |
 
-## Requirements
+## Platform support
 
-Go 1.22 or newer, on Windows. The window layer is implemented against Win32
-(`overlay_windows.go`) and the program therefore only builds there today; the
-model, the renderer and the REPL are portable, so another presenter could be
-added behind the same interface.
+| platform | window | notes |
+| --- | --- | --- |
+| Windows | layered window of our own | per-pixel alpha, and transparent pixels pass the mouse through to the desktop |
+| macOS | Ebitengine's window | transparent framebuffer; the whole window takes the mouse |
+| Linux (X11, with a compositor) | Ebitengine's window | as above; without a compositor the window will be opaque |
+
+Go 1.22 or newer. The build is cgo-free, so it cross-compiles:
+
+```
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o tangly-mac .
+CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -o tangly-linux .
+```
+
+Both of those compile from Windows, which is how they are checked. Only the
+Windows build has been run — the macOS and Linux paths are written against the
+documented behaviour of Ebitengine's transparent window, not verified on the
+machines.
 
 ## Tests
 
@@ -109,6 +125,23 @@ clicked point with a sane cadence, keeping a grip (never more than two legs
 airborne mid-walk), staying put when idle, scrambling and settling when dragged,
 every leg taking part in a walk, evenly spaced legs at rest, a leg's bones being
 able to span its length, and the script API round-tripping a definition.
+
+## Influences
+
+[verlet-js](https://github.com/subprotocol/verlet-js) by Sub Protocol, MIT. It is
+a small Verlet engine — particles, distance/pin/angle constraints, composites —
+and reading it is what settled two things here. Its frame loop scales each
+constraint by `1/step`, so the iteration count changes only how well the solver
+converges rather than how stiff everything is; tangly does the same (`solve` in
+`solver.go`), which is why `iters` is a convergence knob and rigid constraints
+stay rigid. Its `PinConstraint` is the same idea as a planted foot, and its
+"relax, then bounds" loop is the shape of `world.step`.
+
+It has no creature or leg code to borrow — its examples are shapes, trees, cloth
+and a spiderweb — so the legs here are their own thing: exact three-bone inverse
+kinematics per leg rather than a simulated chain, because a chain of distance
+constraints stretches under load and folds into a loop when the foot comes back
+towards the body, and this creature walks on its feet.
 
 ## License
 

@@ -15,11 +15,6 @@ const (
 	windowW = 720
 	windowH = 540
 
-	// The host window is where Ebitengine runs its loop. Its pixels are thrown
-	// away: everything visible is presented through the overlay.
-	hostW = 1
-	hostH = 1
-
 	vkEscape = 0x1B
 	vkM      = 0x4D
 	vkF      = 0x46
@@ -33,7 +28,7 @@ const (
 type game struct {
 	c        *creature
 	bank     *soundBank
-	ov       *overlay
+	p        presenter
 	paint    painter
 	frame    *ebiten.Image
 	dt       float64
@@ -54,14 +49,13 @@ type game struct {
 	step   int
 }
 
-func newGame(bank *soundBank, ov *overlay) *game {
+func newGame(bank *soundBank, p presenter) *game {
 	c := newCreatureAt(V(windowW/2, windowH/2))
 	g := &game{
 		c:     c,
 		bank:  bank,
-		ov:    ov,
+		p:     p,
 		paint: painter{dim: 1, st: defaultStyle},
-		frame: ebiten.NewImage(windowW, windowH),
 		dt:    1.0 / ebiten.DefaultTPS,
 	}
 	g.attach(c)
@@ -105,10 +99,10 @@ func (g *game) rebuild(fn func(*creature)) {
 // requestQuit asks the game loop to stop, from any goroutine.
 func (g *game) requestQuit() { g.quitting.Store(true) }
 
-// withSound plays only while the creature's corner of the desktop is in use, so
+// withSound plays only while the creature's patch of the desktop is in use, so
 // it never chirps away in the background.
 func (g *game) withSound(fn func()) {
-	if _, inside := g.ov.cursor(); inside || g.ov.focused() {
+	if ptr := g.p.pointer(); ptr.inside || g.p.focused() {
 		fn()
 	}
 }
@@ -116,29 +110,14 @@ func (g *game) withSound(fn func()) {
 func (g *game) Update() error {
 	g.bank.beginFrame()
 
-	for _, ev := range g.ov.drainEvents() {
-		switch {
-		case ev.key == vkEscape:
-			g.quit = true
-		case ev.key == vkM:
-			g.bank.muted = !g.bank.muted
-			log.Printf("muted: %v", g.bank.muted)
-		case ev.key == vkF:
-			g.ov.setTopmost(!g.ov.floating())
-			log.Printf("stay on top: %v", g.ov.floating())
-		case ev.wheel != 0:
-			log.Printf("volume: %.2f", g.bank.setVolume(g.bank.master+0.02*float64(ev.wheel)))
-		}
-	}
-
 	// The pointer is read globally: the overlay is transparent to the mouse
 	// almost everywhere, so the creature watches and reacts to the pointer
 	// wherever it is.
-	cur, inside := g.ov.cursor()
-	// The creature only watches the pointer while it is over its own corner of the
+	ptr := g.p.pointer()
+	// The creature only watches the pointer while it is over its own patch of the
 	// desktop, so it does not turn to follow the mouse all over the screen.
-	g.c.SetCursor(cur, inside)
-	g.handleMouse(cur, inside)
+	g.c.SetCursor(ptr.pos, ptr.inside)
+	g.handleMouse(ptr)
 
 	switch {
 	case !g.paused:
@@ -160,17 +139,18 @@ func (g *game) Update() error {
 // handleMouse drives the creature from the pointer: a click inside its world
 // sends it there, a click on its body picks it up, and shift-drag carries the
 // whole world (and the creature with it) somewhere else on the desktop.
-func (g *game) handleMouse(cur Vec, inside bool) {
-	left, leftFresh := keyState(vkLeftButton)
-	right, rightFresh := keyState(vkRightButton)
-	shift, _ := keyState(vkShift)
+func (g *game) handleMouse(ptr pointerState) {
+	cur, inside := ptr.pos, ptr.inside
+	left, leftFresh := ptr.left, ptr.leftFresh
+	right, rightFresh := ptr.right, ptr.rightFresh
+	shift := ptr.shift
 
 	if (leftFresh || (left && !g.leftDown)) && inside {
 		switch {
 		case shift:
 			g.winDrag = true
 			g.dragMouse = cur
-			x, y, _, _ := g.ov.rect()
+			x, y, _, _ := g.p.rect()
 			g.dragWin = [2]int32{x, y}
 		case g.c.NearBody(cur, 34):
 			g.grab = true
@@ -192,7 +172,7 @@ func (g *game) handleMouse(cur Vec, inside bool) {
 	}
 
 	if g.winDrag {
-		g.ov.move(g.dragWin[0]+int32(cur.X-g.dragMouse.X), g.dragWin[1]+int32(cur.Y-g.dragMouse.Y))
+		g.p.move(g.dragWin[0]+int32(cur.X-g.dragMouse.X), g.dragWin[1]+int32(cur.Y-g.dragMouse.Y))
 	}
 	if g.grab {
 		g.c.DragTo(cur)
@@ -201,38 +181,37 @@ func (g *game) handleMouse(cur Vec, inside bool) {
 }
 
 func (g *game) Draw(screen *ebiten.Image) {
-	g.frame.Clear()
-	drawCreature(g.frame, g.c, &g.paint)
-	g.ov.withPixels(func(pix []byte) {
-		g.frame.ReadPixels(pix) // RGBA, premultiplied
-		swizzleToBGRA(pix)
+	g.p.present(screen, func(dst *ebiten.Image) {
+		drawCreature(dst, g.c, &g.paint)
 	})
 }
 
-// Layout describes the host window, which is a single pixel.
+// Layout describes Ebitengine's window: a single hidden pixel on Windows, the
+// creature's own window elsewhere.
 func (g *game) Layout(outsideWidth, outsideHeight int) (int, int) {
-	return hostW, hostH
+	return g.p.hostWindow()
+}
+
+// swizzleToBGRA converts Ebitengine's RGBA order into the BGRA order that a
+// layered window expects. Both are premultiplied.
+func swizzleToBGRA(pix []byte) {
+	for i := 0; i+3 < len(pix); i += 4 {
+		pix[i], pix[i+2] = pix[i+2], pix[i]
+	}
 }
 
 func main() {
 	log.SetFlags(0)
 
-	makeDPIAware()
-	ov, err := newOverlay(windowW, windowH)
+	p, err := newPresenter(windowW, windowH)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer ov.close()
-
-	ebiten.SetWindowTitle("tangly host")
-	ebiten.SetWindowSize(hostW, hostH)
-	ebiten.SetWindowDecorated(false)
-	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeDisabled)
-	ebiten.SetWindowPosition(0, 0)
+	defer p.close()
 	ebiten.SetTPS(ebiten.DefaultTPS)
 
 	bank := newSoundBank()
-	g := newGame(bank, ov)
+	g := newGame(bank, p)
 	g.script = newScriptHost(g, scriptPath)
 
 	log.Printf("tangly awake: %s", g.c.summary())
@@ -243,13 +222,5 @@ func main() {
 	opts := &ebiten.RunGameOptions{ScreenTransparent: true, SkipTaskbar: true}
 	if err := ebiten.RunGameWithOptions(g, opts); err != nil {
 		log.Fatal(err)
-	}
-}
-
-// swizzleToBGRA converts Ebitengine's RGBA order into the BGRA order that
-// UpdateLayeredWindow expects. Both are premultiplied.
-func swizzleToBGRA(pix []byte) {
-	for i := 0; i+3 < len(pix); i += 4 {
-		pix[i], pix[i+2] = pix[i+2], pix[i]
 	}
 }

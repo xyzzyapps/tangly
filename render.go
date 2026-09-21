@@ -146,14 +146,14 @@ func addBody(path *vector.Path, abd, axis, perp Vec, halfLen, halfWid float64) {
 }
 
 func drawCreature(dst *ebiten.Image, c *creature, p *painter) {
-	axis := c.bodyAxis()
+	pos, axis := c.drawnBody()
 	perp := axis.Perp()
 
 	for _, s := range c.strands {
 		drawStrand(dst, s, p)
 	}
-	drawLegs(dst, c, axis, perp, p)
-	drawBody(dst, c, axis, perp, p)
+	drawLegs(dst, c, pos, axis, perp, p)
+	drawBody(dst, c, pos, axis, perp, p)
 	if p.feet {
 		for _, lg := range c.legs {
 			drawFoot(dst, lg.tip.pos, p)
@@ -161,7 +161,7 @@ func drawCreature(dst *ebiten.Image, c *creature, p *painter) {
 	}
 }
 
-func drawLegs(dst *ebiten.Image, c *creature, axis, perp Vec, p *painter) {
+func drawLegs(dst *ebiten.Image, c *creature, pos, axis, perp Vec, p *painter) {
 	p.halo.Reset()
 	p.core.Reset()
 	p.thread.Reset()
@@ -169,9 +169,9 @@ func drawLegs(dst *ebiten.Image, c *creature, axis, perp Vec, p *painter) {
 	// Legs are straight segments between their joints: hip, two knees, foot.
 	var buf [4]Vec
 	for _, lg := range c.legs {
-		buf[0] = c.abdomen.pos.Add(axis.Mul(lg.spec.forward)).Add(perp.Mul(lg.spec.lateral))
-		buf[1] = lg.knee.pos
-		buf[2] = lg.shin.pos
+		buf[0] = pos.Add(axis.Mul(lg.spec.forward)).Add(perp.Mul(lg.spec.lateral))
+		buf[1] = lg.drawnKnee
+		buf[2] = lg.drawnShin
 		buf[3] = lg.tip.pos
 		for _, path := range [...]*vector.Path{&p.halo, &p.core, &p.thread} {
 			path.MoveTo(fx(buf[0]), fy(buf[0]))
@@ -190,14 +190,13 @@ func drawLegs(dst *ebiten.Image, c *creature, axis, perp Vec, p *painter) {
 
 	// A node at each joint, so both knees read as joints.
 	for _, lg := range c.legs {
-		for _, joint := range [...]Vec{lg.knee.pos, lg.shin.pos} {
+		for _, joint := range [...]Vec{lg.drawnKnee, lg.drawnShin} {
 			vector.DrawFilledCircle(dst, fx(joint), fy(joint), p.st.jointRadius, p.dimmed(p.st.knee), true)
 		}
 	}
 }
 
-func drawBody(dst *ebiten.Image, c *creature, axis, perp Vec, p *painter) {
-	abd := c.abdomen.pos
+func drawBody(dst *ebiten.Image, c *creature, abd, axis, perp Vec, p *painter) {
 
 	p.body.Reset()
 	addBody(&p.body, abd, axis, perp, c.bodyLength, c.bodyWidth)

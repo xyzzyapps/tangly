@@ -10,14 +10,17 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/hajimehoshi/ebiten/v2"
 	"golang.org/x/sys/windows"
 )
 
+// Windows presents the creature through a layered window of its own.
+//
 // Ebitengine can only present a transparent window through DXGI composition. On
 // machines where that is unavailable the window is created with a redirection
-// surface and the alpha channel is dropped, so the window shows up as an opaque
-// rectangle. This file presents the creature itself instead: a layered Win32
-// window with per-pixel alpha, fed by Ebitengine's rendering.
+// surface and the alpha channel is dropped, so it shows up as an opaque
+// rectangle. So the creature is drawn into an offscreen Ebitengine image and
+// presented here instead: a layered Win32 window with per-pixel alpha.
 const overlayClassName = "tanglyOverlay"
 
 const (
@@ -147,27 +150,21 @@ var (
 	theOverlay atomic.Pointer[overlay]
 )
 
-// overlayEvent is a message from the overlay window that the game reacts to.
-type overlayEvent struct {
-	key   uintptr // virtual key code, 0 when not a key event
-	wheel int     // wheel clicks, positive when rolling forward
-	quit  bool
-}
-
 type overlay struct {
 	hwnd   uintptr
 	memDC  uintptr
 	bitmap uintptr
-	pix    []byte // BGRA, premultiplied, top-down
+	pix    []byte        // BGRA, premultiplied, top-down
+	frame  *ebiten.Image // what the game drew, before conversion
 
 	w, h       int
 	posX, posY int32
-	topmost    bool
 
-	mu     sync.Mutex
-	seq    uint64
-	events []overlayEvent
-	closed bool
+	mu        sync.Mutex
+	seq       uint64
+	queued    []overlayEvent
+	closed    bool
+	isTopmost bool
 }
 
 // keyState reports whether a key or mouse button is held, and whether it went
@@ -185,9 +182,21 @@ func makeDPIAware() {
 	procSetProcessDPIAware.Call(perMonitorAwareV2)
 }
 
-// newOverlay creates the layered window and starts the thread that presents it.
-func newOverlay(w, h int) (*overlay, error) {
-	o := &overlay{w: w, h: h, topmost: true}
+// The host window is a single hidden pixel on Windows; the layered window is the
+// one that shows anything.
+const (
+	o_hostW = 1
+	o_hostH = 1
+)
+
+// newPresenter creates the layered window and starts the thread that presents it.
+func newPresenter(w, h int) (presenter, error) {
+	makeDPIAware()
+	ebiten.SetWindowTitle("tangly host")
+	ebiten.SetWindowSize(o_hostW, o_hostH)
+	ebiten.SetWindowDecorated(false)
+	ebiten.SetWindowPosition(0, 0)
+	o := &overlay{w: w, h: h, isTopmost: true, frame: ebiten.NewImage(w, h)}
 	ready := make(chan error, 1)
 	go o.run(ready)
 	if err := <-ready; err != nil {
@@ -195,6 +204,24 @@ func newOverlay(w, h int) (*overlay, error) {
 	}
 	theOverlay.Store(o)
 	return o, nil
+}
+
+// hostWindow is a single hidden pixel: the real window is the layered one.
+func (o *overlay) hostWindow() (int, int) { return 1, 1 }
+
+// pointer is the mouse, read globally: the overlay is transparent to the mouse
+// almost everywhere, so its own window messages would miss most of it.
+func (o *overlay) pointer() pointerState {
+	cur, inside := o.cursor()
+	left, leftFresh := keyState(vkLeftButton)
+	right, rightFresh := keyState(vkRightButton)
+	shift, _ := keyState(vkShift)
+	return pointerState{
+		pos: cur, inside: inside,
+		left: left, leftFresh: leftFresh,
+		right: right, rightFresh: rightFresh,
+		shift: shift,
+	}
 }
 
 func (o *overlay) run(ready chan error) {
@@ -254,7 +281,7 @@ func (o *overlay) run(ready chan error) {
 		closed := o.closed
 		if !closed && o.seq != shown {
 			shown = o.seq
-			o.present()
+			o.blit()
 		}
 		o.mu.Unlock()
 		if closed {
@@ -311,8 +338,20 @@ func (o *overlay) destroySurface() {
 	}
 }
 
-// present pushes the current surface to the screen.
-func (o *overlay) present() {
+// present draws a frame offscreen, converts it to the layout the layered window
+// wants and hands it over. The screen Ebitengine offers is not used: the creature
+// is shown through our own window.
+func (o *overlay) present(_ *ebiten.Image, draw func(*ebiten.Image)) {
+	o.frame.Clear()
+	draw(o.frame)
+	o.withPixels(func(pix []byte) {
+		o.frame.ReadPixels(pix) // RGBA, premultiplied
+		swizzleToBGRA(pix)
+	})
+}
+
+// blit pushes the current surface to the screen.
+func (o *overlay) blit() {
 	screenDC, _, _ := procGetDC.Call(0)
 	defer procReleaseDC.Call(0, screenDC)
 
@@ -347,21 +386,21 @@ func (o *overlay) withPixels(fn func(pix []byte)) {
 	o.seq++
 }
 
-// drainEvents returns the window events since the last call.
-func (o *overlay) drainEvents() []overlayEvent {
+// events are the shortcuts and wheel clicks since the last call.
+func (o *overlay) events() []overlayEvent {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if len(o.events) == 0 {
+	if len(o.queued) == 0 {
 		return nil
 	}
-	out := o.events
-	o.events = nil
+	out := o.queued
+	o.queued = nil
 	return out
 }
 
 func (o *overlay) pushEvent(e overlayEvent) {
 	o.mu.Lock()
-	o.events = append(o.events, e)
+	o.queued = append(o.queued, e)
 	o.mu.Unlock()
 }
 
@@ -372,9 +411,9 @@ func (o *overlay) move(x, y int32) {
 	procSetWindowPos.Call(o.hwnd, hwndTopmost, uintptr(x), uintptr(y), 0, 0, swpNoSize|swpNoActivate)
 }
 
-func (o *overlay) setTopmost(on bool) {
+func (o *overlay) topmost(on bool) {
 	o.mu.Lock()
-	o.topmost = on
+	o.isTopmost = on
 	o.mu.Unlock()
 	after := hwndTopmost
 	if !on {
@@ -393,11 +432,11 @@ func (o *overlay) focused() bool {
 func (o *overlay) floating() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.topmost
+	return o.isTopmost
 }
 
 // screenSize is the desktop's size in pixels.
-func screenSize() (int, int) {
+func (o *overlay) screenSize() (int, int) {
 	w, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	h, _, _ := procGetSystemMetrics.Call(smCyScreen)
 	return int(w), int(h)
@@ -412,7 +451,7 @@ func (o *overlay) rect() (x, y, w, h int32) {
 
 // frameStats counts how much of the surface is actually drawn, which is the
 // quickest way to tell an empty frame from an invisible window.
-func (o *overlay) frameStats() (opaque, partial, transparent int) {
+func (o *overlay) frameStats() (opaque, partial, transparent int, ok bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for i := 3; i < len(o.pix); i += 4 {
@@ -425,7 +464,7 @@ func (o *overlay) frameStats() (opaque, partial, transparent int) {
 			partial++
 		}
 	}
-	return opaque, partial, transparent
+	return opaque, partial, transparent, true
 }
 
 // cursor returns the pointer in overlay-local pixels and whether it is inside
@@ -449,6 +488,19 @@ func (o *overlay) close() {
 	if !already {
 		procDestroyWindow.Call(o.hwnd)
 	}
+}
+
+// shortcutFor maps a virtual key to a shortcut the creature knows.
+func shortcutFor(vk uintptr) keyCode {
+	switch vk {
+	case vkEscape:
+		return keyEscape
+	case vkM:
+		return keyMute
+	case vkF:
+		return keyTopmost
+	}
+	return keyNone
 }
 
 func overlayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
@@ -491,7 +543,9 @@ func overlayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 	case wmKeyDown, wmSysKeyDown:
 		if o != nil {
-			o.pushEvent(overlayEvent{key: wParam})
+			if k := shortcutFor(wParam); k != keyNone {
+				o.pushEvent(overlayEvent{key: k})
+			}
 		}
 		return 0
 	case wmMouseWheel:

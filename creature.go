@@ -18,9 +18,10 @@ const (
 	// being steered by its own feet instead of the other way round.
 	bodyMass = 0.2
 	legMass  = 1.6
-	// hipStiff is the per-iteration stiffness of the link between a hip and the
-	// body. Slightly compliant, so a hip trails a little under load.
-	hipStiff = 0.6
+	// hipStiff is the stiffness of the link between a hip and the body. Rigid:
+	// the body is kinematic, so the correction can only move the hip, and a hip
+	// that trails behind makes the stance measurements lie.
+	hipStiff = 1.0
 
 	bodySpan = 20 // distance from abdomen to head
 	// The body is a rectangle: defaultBodyLength is half of it along the body
@@ -47,10 +48,14 @@ const (
 	// have to stretch.
 	foldLimit    = 0.78
 	stretchLimit = 0.97
-	// legSwing caps how far a stepping leg may swing towards the direction of
-	// travel, which keeps the fan fanned while walking. restSpread is how far a
-	// planted foot may drift out of line before the creature steps it back.
-	legSwing   = 0.6
+	// How a walking foot is placed, as fractions of the leg's reach: legLead ahead
+	// of the hip along the direction of travel, legSide out to its own side. The
+	// pair has to land inside walkTrigger or the foot steps again on touchdown, and
+	// the lead wants to be as long as the geometry allows, so that a step covers
+	// ground instead of flickering. restSpread is how far a planted foot may drift
+	// out of line before the creature steps it back.
+	legLead    = 0.55
+	legSide    = 0.68
 	restSpread = 8.0
 	// dragFrom is the span at which a planted leg starts to hold the body back,
 	// and settleFor is how long the creature spends putting its legs back in line
@@ -88,10 +93,15 @@ type leg struct {
 	side  float64    // which way the knee bows, +1 or -1
 	limit float64    // longest hip-to-foot span the bones allow
 
-	anchor    Vec // where the planted foot is pinned
-	from, to  Vec
-	swing     float64 // 0..1 while the foot is airborne, -1 when planted
-	dur       float64
+	anchor   Vec // where the planted foot is pinned
+	from, to Vec
+	swing    float64 // 0..1 while the foot is airborne, -1 when planted
+	dur      float64
+	// drawn marks are where the joints are shown, which trails the exact solution
+	// by a few milliseconds so the leg carries some weight as it moves.
+	drawnKnee Vec
+	drawnShin Vec
+
 	air       bool
 	planted   bool
 	settling  bool    // this step is putting the leg back in line
@@ -150,6 +160,14 @@ type creature struct {
 	scurry      float64
 	settleTimer float64 // seconds left of putting the legs back in line
 	wasWalking  bool
+
+	// Follow rates for the drawn pose, in "how quickly it catches up" per second.
+	// The physics is untouched by them: the feet stay exactly where they are
+	// planted and only the joints and the shell trail.
+	legFollow  float64
+	bodyFollow float64
+	drawnPos   Vec
+	drawnAngle float64
 
 	// Wandering is off by default: a standing creature should stand. It is here
 	// for when you want it to potter about on its own.
@@ -211,7 +229,7 @@ func newCreature(w *world, center Vec, rng *rand.Rand) *creature {
 		dt:           1.0 / 60,
 		pos:          center,
 		arriveRadius: 16,
-		maxSpeed:     85,
+		maxSpeed:     62,
 		agility:      7,
 		turnRate:     4,
 		dragGain:     3.2,
@@ -222,6 +240,12 @@ func newCreature(w *world, center Vec, rng *rand.Rand) *creature {
 		bodyWidth:  defaultBodyWidth,
 		shinBend:   defaultShinBend,
 
+		// How quickly the drawn joints and shell catch up with the physics. The
+		// joints trail a foot's swing by a dozen pixels or so, which is what gives
+		// the legs some weight; the shell trails a little more than that.
+		legFollow:  55,
+		bodyFollow: 16,
+
 		wanderEvery:  [2]float64{20, 50},
 		wanderChance: 0.35,
 		wanderRadius: [2]float64{25, 70},
@@ -230,6 +254,8 @@ func newCreature(w *world, center Vec, rng *rand.Rand) *creature {
 	}
 
 	c.angle = rng.Float64() * 2 * math.Pi
+	c.drawnAngle = c.angle
+	c.drawnPos = center
 	axis := V(math.Cos(c.angle), math.Sin(c.angle))
 
 	c.abdomen = w.newParticle(center.Sub(axis.Mul(5)), 0, 1)
@@ -355,6 +381,8 @@ func (c *creature) addLeg(d legDef) *leg {
 	tipPos = hipPos.Add(outward.Mul(lg.limit * idleStance))
 	tip.setPos(tipPos)
 	lg.anchor = tipPos
+	lg.drawnKnee = kneePos
+	lg.drawnShin = shinPos
 
 	c.legs = append(c.legs, lg)
 	return lg
@@ -625,7 +653,9 @@ func (c *creature) Update(dt float64) {
 	for _, lg := range c.legs {
 		lg.constrainFoot(c.w.bounds)
 		lg.resolve(c.w.bounds)
+		lg.follow(dt, c.legFollow)
 	}
+	c.followBody(dt)
 	c.updateChatter(dt)
 }
 
@@ -882,6 +912,28 @@ func (c *creature) updateLegs(dt float64, walkDir Vec, walking bool) {
 	}
 }
 
+// followBody trails the shell behind the pose, so a change of direction has some
+// weight to it rather than snapping.
+func (c *creature) followBody(dt float64) {
+	k := 1 - math.Exp(-c.bodyFollow*dt)
+	c.drawnPos = c.drawnPos.Add(c.pos.Sub(c.drawnPos).Mul(k))
+	c.drawnAngle += math.Remainder(c.angle-c.drawnAngle, 2*math.Pi) * k
+}
+
+// follow trails a leg's joints behind their exact positions. The foot is not
+// trailed: it stays where it was planted.
+func (lg *leg) follow(dt, rate float64) {
+	k := 1 - math.Exp(-rate*dt)
+	lg.drawnKnee = lg.drawnKnee.Add(lg.knee.pos.Sub(lg.drawnKnee).Mul(k))
+	lg.drawnShin = lg.drawnShin.Add(lg.shin.pos.Sub(lg.drawnShin).Mul(k))
+}
+
+// drawnBody is the shell as drawn, and drawnAxis its heading.
+func (c *creature) drawnBody() (Vec, Vec) {
+	axis := V(math.Cos(c.drawnAngle), math.Sin(c.drawnAngle))
+	return c.drawnPos, axis
+}
+
 // outOfLine reports whether a planted foot has drifted out of the leg's own
 // direction around the body, which is what a walk leaves behind.
 func (c *creature) outOfLine(lg *leg) bool {
@@ -963,13 +1015,17 @@ func (c *creature) startStep(lg *leg, walkDir Vec, walking bool) {
 		dir = outward.Rot((c.rng.Float64() - 0.5) * 0.9)
 		scale = 0.82 + c.rng.Float64()*0.08
 	case walking && !walkDir.IsZero():
-		// Each leg steps within its own slice of the fan, swung towards the
-		// direction of travel by at most a third of a turn. Blending every leg
-		// towards the walk direction instead would collapse the fan into a bundle
-		// in front of the body.
-		swing := math.Atan2(outward.Cross(walkDir), outward.Dot(walkDir))
-		dir = outward.Rot(clampf(swing, -legSwing, legSwing))
-		scale = landingScale + c.rng.Float64()*0.05
+		// Every leg lands ahead of its hip along the direction of travel, keeping to
+		// its own side of the body. A leg that lands behind the body is stretched
+		// again within a few pixels and steps at once, which is what made the walk
+		// flicker: the feet have to be planted *ahead*, rear legs included.
+		own := outward.Sub(walkDir.Mul(outward.Dot(walkDir)))
+		if own.Len2() < 1e-6 {
+			own = walkDir.Perp().Mul(sign(outward.Cross(walkDir)))
+		}
+		offset := walkDir.Mul(lg.limit * legLead).Add(own.Norm().Mul(lg.limit * legSide))
+		dir = offset.Norm()
+		scale = offset.Len() / lg.limit
 	default:
 		// Idling feet stand well out, so a resting creature keeps the long, fanned
 		// stance of the reference while still swaying without shuffling.
@@ -991,7 +1047,9 @@ func (c *creature) startStep(lg *leg, walkDir Vec, walking bool) {
 	lg.planted = false
 	// A step lasts about as long as the body needs to cover the distance, so the
 	// foot is never left behind by a fast walk.
-	lg.dur = clampf(0.07+0.09*(lg.to.Sub(lg.from).Len()/lg.limit), 0.07, 0.16)
+	// A long reach wants a long time: a foot that covers a stride in a tenth of a
+	// second reads as a twitch rather than a step.
+	lg.dur = clampf(0.10+0.15*(lg.to.Sub(lg.from).Len()/lg.limit), 0.10, 0.32)
 	if c.dragging {
 		lg.dur *= 0.7
 	}
