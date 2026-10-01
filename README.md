@@ -2,6 +2,8 @@
 
 [![Built with DeepSeek](https://img.shields.io/badge/built_with-DeepSeek-4D6BFE)](https://deepseek.com)
 
+
+
 A eight-legged creature that lives on your desktop. It walks to where you click,
 makes very small noises, and can be taken apart and rebuilt live
 from a REPL while it is running.
@@ -16,6 +18,8 @@ go build -o tangly.exe .
 
 Start it from a terminal — that terminal becomes the creature's prompt
 (see [TUTORIAL.md](TUTORIAL.md)).
+
+Support on https://xyzzy.gumroad.com/
 
 ## Controls
 
